@@ -86,6 +86,7 @@ def run():
             conn = store.r()
             while conn.lmove(store.DETECT_BUSY, store.DETECT_Q, "RIGHT", "LEFT"):
                 pass
+            store.requeue_pending()
             while True:
                 raw = conn.blmove(store.DETECT_Q, store.DETECT_BUSY, 5, "RIGHT", "LEFT")
                 if raw is None:

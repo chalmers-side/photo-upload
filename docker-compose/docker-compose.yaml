@@ -8,13 +8,17 @@ services:
       PHOTO_DIR: /data/photos
       LOG_DIR: /logs
       REDIS_URL: redis://redis:6379/0
+      DATABASE_URL: postgresql://photo:photo@postgres:5432/photo
       GUNICORN_WORKERS: "2"
       GUNICORN_TIMEOUT: "120"
     volumes:
       - "${HOST_PHOTO_DIR:-/Volumes/OWC Envoy Pro FX/photo-upload}:/data/photos"
       - "${HOST_PHOTO_DIR:-/Volumes/OWC Envoy Pro FX/photo-upload}/logs:/logs"
     depends_on:
-      - redis
+      redis:
+        condition: service_started
+      postgres:
+        condition: service_healthy
 
   detector:
     image: ghcr.io/chalmers-chang/photo-upload-detector:${IMAGE_TAG:-latest}
@@ -22,11 +26,15 @@ services:
     environment:
       PHOTO_DIR: /data/photos
       REDIS_URL: redis://redis:6379/0
+      DATABASE_URL: postgresql://photo:photo@postgres:5432/photo
       DETECTOR_THREADS: "2"
     volumes:
       - "${HOST_PHOTO_DIR:-/Volumes/OWC Envoy Pro FX/photo-upload}:/data/photos:ro"
     depends_on:
-      - redis
+      redis:
+        condition: service_started
+      postgres:
+        condition: service_healthy
 
   nginx:
     image: ghcr.io/chalmers-chang/photo-upload-nginx:${IMAGE_TAG:-latest}
@@ -43,7 +51,20 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
-    user: "0:0"
-    command: redis-server --appendonly yes
+    command: redis-server --save "" --appendonly no
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: photo
+      POSTGRES_PASSWORD: photo
+      POSTGRES_DB: photo
+      PGDATA: /var/lib/postgresql/data/pgdata
     volumes:
-      - "${HOST_PHOTO_DIR:-/Volumes/OWC Envoy Pro FX/photo-upload}/redis:/data"
+      - "${HOST_PHOTO_DIR:-/Volumes/OWC Envoy Pro FX/photo-upload}/postgres:/var/lib/postgresql/data"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U photo -d photo"]
+      interval: 2s
+      timeout: 5s
+      retries: 20

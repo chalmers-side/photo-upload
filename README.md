@@ -1,6 +1,6 @@
 # photo-upload
 
-Guests upload photos. Multiple screens play the same slideshow. Admins run a lottery, and guests draw Ichiban Kuji (一番賞) prizes. Only photos with a person in them earn lottery and Ichiban Kuji chances. The supported way to run it is Docker Compose: nginx + gunicorn + Redis + a person-detector worker.
+Guests upload photos. Multiple screens play the same slideshow. Admins run a lottery, and guests draw Ichiban Kuji (一番賞) prizes. Only photos with a person in them earn lottery and Ichiban Kuji chances. The supported way to run it is Docker Compose: nginx + gunicorn + Postgres + Redis + a person-detector worker.
 
 ## Requirements
 
@@ -8,7 +8,7 @@ Guests upload photos. Multiple screens play the same slideshow. Admins run a lot
 - A photo directory the Docker VM can mount (files stay on the host, not in the image)
 - Port **8000** free
 - Pull access to `ghcr.io/chalmers-chang/photo-upload`, `photo-upload-nginx`, and `photo-upload-detector`
-- Redis is started by Compose; AOF lives on the photo disk (`$HOST_PHOTO_DIR/redis`) so a Docker Desktop restart does not wipe projects
+- Postgres data lives on the photo disk (`$HOST_PHOTO_DIR/postgres`). Redis is cache only (detect queue + slideshow playhead).
 
 Flask alone does **not** serve `/photos/` — nginx does. Use Compose for local debugging too.
 
@@ -35,7 +35,7 @@ docker-compose/poc.sh up     # build from source, http://localhost:8001 (+ LAN U
 docker-compose/poc.sh seed   # demo project /p/poc/ with backgrounds, marks, ticket, A–E prizes
 ```
 
-Separate Compose project (`photo-upload-poc`): own Redis volume, photos in `.poc/` (gitignored), port `POC_PORT` (default 8001). `web/` and `config/` are bind-mounted and gunicorn runs with `--reload`, so Python and template edits apply on save. `web/detector.py` needs `poc.sh restart detector`. Rebuild (`poc.sh up`) only after changing `python/uv.lock`, the Dockerfile, or `nginx.conf`. `poc.sh reset` wipes POC data.
+Separate Compose project (`photo-upload-poc`): Postgres in `.poc/postgres`, photos in `.poc/photos` (gitignored), port `POC_PORT` (default 8001). `web/` and `config/` are bind-mounted and gunicorn runs with `--reload`, so Python and template edits apply on save. `web/detector.py` needs `poc.sh restart detector`. Rebuild (`poc.sh up`) only after changing `python/uv.lock`, the Dockerfile, or `nginx.conf`. `poc.sh reset` wipes POC data.
 
 ## What to change
 
@@ -45,7 +45,7 @@ Separate Compose project (`photo-upload-poc`): own Redis volume, photos in `.poc
 | --- | --- | --- |
 | Photo directory | Compose `HOST_PHOTO_DIR` (or `.env`) | Default `/Volumes/OWC Envoy Pro FX/photo-upload`. Bind the same path on **app** and **nginx**. |
 | App logs | `$HOST_PHOTO_DIR/logs` | One file per project per day. Deploy also symlinks `/opt/app/photo-upload/logs`. Older than 30 days are deleted. |
-| Admin login | `ADMIN_USERNAME` / `ADMIN_PASSWORD` on `app` | Seeds the root account in Redis on first boot (`config/admin.py`). Later password changes live in Redis. |
+| Admin login | `ADMIN_USERNAME` / `ADMIN_PASSWORD` on `app` | Seeds the root account in Postgres on first boot (`config/admin.py`). Later password changes live in Postgres. |
 | `SECRET_KEY` | `app` environment | Default in `config/appsetting.py`. Signs cookies. |
 
 **Site-wide defaults** (Compose `app.environment`, or `config/appsetting.py`). New projects copy the slideshow/lottery values; each project can override them in Admin → Settings.
@@ -61,7 +61,7 @@ Separate Compose project (`photo-upload-poc`): own Redis volume, photos in `.poc
 | `SLIDESHOW_MODE` | `wall` | Default slideshow layout: `wall` (name + caption) or `full` (photo only) |
 | `SLIDESHOW_QUEUE_MAX` | `100` | Slideshow queue cap |
 | `SLIDESHOW_PER_DEVICE` | `5` | Newest photos per device when over the cap |
-| `RECORD_TTL_DAYS` | `20` | Redis record TTL (files are not auto-deleted) |
+| `RECORD_TTL_DAYS` | `20` | Photo/ticket age used by sweep (files are not auto-deleted on their own) |
 | `MAX_UPLOAD_MB` | `20` | Per-photo cap; batch is 5 photos; nginx `client_max_body_size` is 110m |
 | `JPEG_MAX_EDGE` | `2560` | Longest edge after upload |
 | `GUNICORN_WORKERS` | `2` | |
@@ -95,7 +95,7 @@ Look-and-feel (`PJT_FADE`, `BKG_FADE`, button colors, glass padding, `LOTTERY_PA
 
 ```
 config/           env defaults, admin login, copy
-web/              Flask app, Redis store, templates, detector worker
+web/              Flask app, Postgres store, templates, detector worker
 web/STYLE.md      design system (tokens, glass, buttons, per-page layout)
 web/static/favicon.png   site icon (replace this PNG to swap)
 art/              source art (favicon zip, etc.)
@@ -103,18 +103,18 @@ python/           uv lockfile only (app code is not here)
 docker-compose/   Dockerfile, compose, nginx.conf, POC stack (poc.sh)
 ```
 
-Request flow: browser → nginx `:8000` → `/photos/*` from disk, everything else to gunicorn. Redis holds projects, photo records, tickets, and the slideshow playhead; its AOF is `$HOST_PHOTO_DIR/redis` so it survives a Docker restart. JPEG files live on the host bind.
+Request flow: browser → nginx `:8000` → `/photos/*` from disk, everything else to gunicorn. Postgres holds projects, users, roles, photo records, tickets, and kuji draws (`$HOST_PHOTO_DIR/postgres`). Redis is the detect queue and slideshow playhead cache. JPEG files live on the host bind.
 
 ## Architecture notes
 
-The split is small and enough: **routes in `web/app.py`**, **Redis + files in `web/store.py`**, **resize in `web/images.py`**, **defaults in `config/`**. Do not wrap `appsetting` in a class for speed — import-time constants are already cheap.
+The split is small and enough: **routes in `web/app.py`**, **Postgres + files + Redis cache in `web/store.py`**, **resize in `web/images.py`**, **defaults in `config/`**. Do not wrap `appsetting` in a class for speed — import-time constants are already cheap.
 
 `/p/<slug>/api/slideshow` only advances the Redis playhead (Lua). The queue is rebuilt on upload, photo drop, and settings save — not on every TV poll.
 
 Uploads are the other cost: Pillow on the gunicorn worker. `JPEG_MAX_EDGE` 2560 and quality 80 (no `optimize=True`) are the right tradeoff. Photos themselves are served by nginx, not Flask.
 
-Tickets and the slideshow playhead belong in Redis (Lua already advances the playhead atomically). Do not put the JPEGs in Redis or in the image.
+Tickets live in Postgres. The slideshow playhead stays in Redis (Lua advances it atomically). Do not put the JPEGs in Redis, Postgres, or the image.
 
 Person check runs in the `detector` service (`web/detector.py`, image target `detector`): YOLOX-Tiny ONNX (Apache-2.0, baked into the image) on onnxruntime CPU, about 20ms per photo. Upload saves the photo as `person: pending` and pushes a job on the Redis list `detect_q`; the worker moves it to `detect_busy` while it runs (re-queued on restart), then grants the lottery ticket and one Ichiban Kuji chance if a person is found. Photos without people still play in the slideshow. The upload page polls `/p/<slug>/api/photos/status` for the result. If the detector is down, photos stay pending and nothing is granted until it comes back.
 
-Ichiban Kuji draws are one Redis Lua script (check the device's chances, pick a grade weighted by what is left, decrement), so stock cannot oversell across gunicorn workers. Claims use `HSETNX`, so a prize can be claimed once.
+Ichiban Kuji draws are one Postgres transaction (`SELECT … FOR UPDATE` on `kuji_config`, then insert the draw), so stock cannot oversell across gunicorn workers. Claims set `claimed_at` once.

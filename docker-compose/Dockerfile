@@ -28,7 +28,7 @@ ADD --checksum=sha256:427cc366d34e27ff7a03e2899b5e3671425c262ea2291f88bb942bc1cc
     /app/models/yolox_tiny.onnx
 
 COPY config ./config
-COPY web/__init__.py web/store.py web/detector.py ./web/
+COPY web/__init__.py web/store.py web/detector.py web/schema.sql ./web/
 
 CMD ["python", "-m", "web.detector"]
 

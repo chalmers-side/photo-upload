@@ -9,6 +9,7 @@ dependencies = [
     "pillow>=10.0,<12",
     "pillow-heif>=0.18,<1",
     "qrcode>=8.2",
+    "psycopg[binary,pool]>=3.2,<4",
 ]
 
 [dependency-groups]

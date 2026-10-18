@@ -15,6 +15,7 @@ services:
       PHOTO_DIR: /data/photos
       LOG_DIR: /logs
       REDIS_URL: redis://redis:6379/0
+      DATABASE_URL: postgresql://photo:photo@postgres:5432/photo
     command:
       - sh
       - -c
@@ -28,7 +29,10 @@ services:
       - ${POC_DATA_DIR:-../.poc}/photos:/data/photos
       - ${POC_DATA_DIR:-../.poc}/photos/logs:/logs
     depends_on:
-      - redis
+      redis:
+        condition: service_started
+      postgres:
+        condition: service_healthy
 
   detector:
     build:
@@ -37,13 +41,17 @@ services:
     environment:
       PHOTO_DIR: /data/photos
       REDIS_URL: redis://redis:6379/0
+      DATABASE_URL: postgresql://photo:photo@postgres:5432/photo
       DETECTOR_THREADS: "2"
     volumes:
       - ../web:/app/web:ro
       - ../config:/app/config:ro
       - ${POC_DATA_DIR:-../.poc}/photos:/data/photos:ro
     depends_on:
-      - redis
+      redis:
+        condition: service_started
+      postgres:
+        condition: service_healthy
 
   nginx:
     build:
@@ -60,9 +68,19 @@ services:
 
   redis:
     image: redis:7-alpine
-    command: redis-server --appendonly yes
-    volumes:
-      - redis-data:/data
+    command: redis-server --save "" --appendonly no
 
-volumes:
-  redis-data:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: photo
+      POSTGRES_PASSWORD: photo
+      POSTGRES_DB: photo
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - ${POC_DATA_DIR:-../.poc}/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U photo -d photo"]
+      interval: 2s
+      timeout: 5s
+      retries: 20

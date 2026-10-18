@@ -5,7 +5,7 @@
 #   ./poc.sh logs [service]     follow logs
 #   ./poc.sh restart [service]  e.g. restart detector after editing web/detector.py
 #   ./poc.sh ps | down
-#   ./poc.sh reset              down + delete POC Redis volume and .poc/ photos
+#   ./poc.sh reset              down + delete .poc/ (photos + Postgres)
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -25,7 +25,7 @@ cmd="${1:-up}"
 shift || true
 case "$cmd" in
   up)
-    mkdir -p "$data/photos/logs"
+    mkdir -p "$data/photos/logs" "$data/postgres"
     compose up -d --build
     for _ in $(seq 1 30); do
       curl -fsS "http://localhost:${port}/health" >/dev/null 2>&1 && break

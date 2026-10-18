@@ -7,10 +7,13 @@ import uuid
 from pathlib import Path
 
 import redis
+from psycopg.rows import dict_row
+from psycopg_pool import ConnectionPool
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from config import admin as admin_config
 from config import appsetting
+from config import database as database_config
 from config import msg
 from config import redis as redis_config
 
@@ -67,72 +70,37 @@ KUJI_TOTAL_MAX = 999
 KUJI_PER_USER_MAX = 50
 KUJI_LABEL_MAX = 40
 
-_KUJI_DRAW_LUA = """
-local cfg, drawn, used, earned, mine, draws, seq =
-  KEYS[1], KEYS[2], KEYS[3], KEYS[4], KEYS[5], KEYS[6], KEYS[7]
-local per = tonumber(redis.call('HGET', cfg, 'per_user') or ARGV[4])
-local have = tonumber(redis.call('GET', earned) or '0')
-local done = tonumber(redis.call('GET', used) or '0')
-local unlimited = tonumber(ARGV[5] or '0')
-if unlimited == 0 and done >= math.min(have, per) then
-  return {'no_chance'}
-end
-local grades = {'A', 'B', 'C', 'D', 'E'}
-local left = {}
-local sum = 0
-for i, g in ipairs(grades) do
-  local l = tonumber(redis.call('HGET', cfg, g) or '0')
-    - tonumber(redis.call('HGET', drawn, g) or '0')
-  if l < 0 then l = 0 end
-  left[i] = l
-  sum = sum + l
-end
-if sum == 0 then
-  return {'sold_out'}
-end
-local pick = math.floor(tonumber(ARGV[1]) * sum)
-if pick >= sum then pick = sum - 1 end
-local grade
-for i, g in ipairs(grades) do
-  if pick < left[i] then
-    grade = g
-    break
-  end
-  pick = pick - left[i]
-end
-redis.call('HINCRBY', drawn, grade, 1)
-redis.call('INCR', used)
-local id = tostring(redis.call('INCR', seq))
-redis.call('HSET', draws, id, cjson.encode({grade = grade, device_id = ARGV[3], ts = tonumber(ARGV[2])}))
-redis.call('RPUSH', mine, id)
-return {'ok', grade, id}
-"""
-
-_KUJI_SAVE_LUA = """
-local grades = {'A', 'B', 'C', 'D', 'E'}
-for i, g in ipairs(grades) do
-  if tonumber(ARGV[i + 1]) < tonumber(redis.call('HGET', KEYS[2], g) or '0') then
-    return g
-  end
-end
-redis.call('HSET', KEYS[1], 'per_user', ARGV[1],
-  'A', ARGV[2], 'B', ARGV[3], 'C', ARGV[4], 'D', ARGV[5], 'E', ARGV[6])
-return ''
-"""
-
 DETECT_Q = "detect_q"
 DETECT_BUSY = "detect_busy"
 
-_pool = None
+_redis = None
 _advance = None
-_scripts = {}
+_pg = None
+_SCHEMA = Path(__file__).with_name("schema.sql").read_text()
 
 
 def r():
-    global _pool
-    if _pool is None:
-        _pool = redis.Redis.from_url(redis_config.url, decode_responses=True)
-    return _pool
+    global _redis
+    if _redis is None:
+        _redis = redis.Redis.from_url(redis_config.url, decode_responses=True)
+    return _redis
+
+
+def pg():
+    global _pg
+    if _pg is None:
+        _pg = ConnectionPool(
+            conninfo=database_config.url,
+            min_size=1,
+            max_size=8,
+            kwargs={"row_factory": dict_row},
+        )
+        with _pg.connection() as conn:
+            for stmt in _SCHEMA.split(";"):
+                stmt = stmt.strip()
+                if stmt:
+                    conn.execute(stmt)
+    return _pg
 
 
 def advance_script():
@@ -142,14 +110,26 @@ def advance_script():
     return _advance
 
 
-def _script(name, src):
-    if name not in _scripts:
-        _scripts[name] = r().register_script(src)
-    return _scripts[name]
-
-
 def ttl_seconds():
     return appsetting.record_ttl_days * 86400
+
+
+def _n(row, key="n"):
+    return int(row[key]) if row else 0
+
+
+def _one(sql, params=(), conn=None):
+    if conn is not None:
+        return conn.execute(sql, params).fetchone()
+    with pg().connection() as c:
+        return c.execute(sql, params).fetchone()
+
+
+def _all(sql, params=(), conn=None):
+    if conn is not None:
+        return conn.execute(sql, params).fetchall()
+    with pg().connection() as c:
+        return c.execute(sql, params).fetchall()
 
 
 def photo_dir(project_id):
@@ -186,6 +166,7 @@ ASSETS = {
 
 def asset_is_png(kind):
     return ASSETS.get(kind, "").endswith(".png")
+
 
 _LEGACY = {
     "pjt": "pjt-home.jpg",
@@ -324,7 +305,7 @@ def _parse_setting(k, v):
 
 def settings_of(project_id, raw=None):
     if raw is None:
-        raw = r().hgetall(f"project:{project_id}") or {}
+        raw = _one("SELECT * FROM projects WHERE id = %s", (project_id,)) or {}
     out = default_settings()
     for k in SETTINGS:
         try:
@@ -335,9 +316,10 @@ def settings_of(project_id, raw=None):
 
 
 def update_project_settings(project_id, form):
-    if not r().exists(f"project:{project_id}"):
+    if not get_project(project_id):
         raise ValueError(msg.project_missing)
-    mapping = {}
+    sets = []
+    args = []
     for k in SETTINGS:
         if k not in form:
             continue
@@ -345,29 +327,34 @@ def update_project_settings(project_id, form):
             n = _parse_setting(k, form.get(k))
         except (TypeError, ValueError):
             raise ValueError(msg.bad_setting)
-        mapping[k] = str(n)
-    if not mapping:
-        raise ValueError(msg.bad_setting)
-    r().hset(f"project:{project_id}", mapping=mapping)
+        sets.append(f"{k} = %s")
+        args.append(n)
+    if sets:
+        args.append(project_id)
+        with pg().connection() as conn:
+            conn.execute(
+                f"UPDATE projects SET {', '.join(sets)} WHERE id = %s", args
+            )
     cfgp = settings_of(project_id)
     rebuild_slideshow_queue(project_id, cfgp)
     return cfgp
 
 
-def get_project(project_id):
-    data = r().hgetall(f"project:{project_id}")
-    if not data:
+def _project_from_row(row):
+    if not row:
         return None
-    data["id"] = project_id
-    data.update(settings_of(project_id, raw=data))
+    data = dict(row)
+    data["created_at"] = str(int(float(data["created_at"])))
+    data.update(settings_of(data["id"], raw=data))
     return attach_assets(data)
 
 
+def get_project(project_id):
+    return _project_from_row(_one("SELECT * FROM projects WHERE id = %s", (project_id,)))
+
+
 def project_by_slug(slug):
-    pid = r().get(f"slug:{slug}")
-    if not pid:
-        return None
-    return get_project(pid)
+    return _project_from_row(_one("SELECT * FROM projects WHERE slug = %s", (slug,)))
 
 
 def list_projects_for_ids(ids):
@@ -380,7 +367,9 @@ def list_projects_for_ids(ids):
         p = get_project(pid)
         if not p:
             continue
-        p["photo_count"] = r().zcard(f"photos:{pid}")
+        p["photo_count"] = _n(
+            _one("SELECT COUNT(*) AS n FROM photos WHERE project_id = %s", (pid,))
+        )
         p["kuji"] = kuji_state(pid)
         out.append(p)
     out.sort(key=lambda x: x.get("created_at", ""), reverse=True)
@@ -388,7 +377,8 @@ def list_projects_for_ids(ids):
 
 
 def list_projects():
-    return list_projects_for_ids(sorted(r().smembers("projects")))
+    rows = _all("SELECT id FROM projects")
+    return list_projects_for_ids([row["id"] for row in rows])
 
 
 def projects_by_slugs(slugs):
@@ -423,24 +413,45 @@ def create_project(name, slug, owner=None):
         slug = slug_from_name(name) or make_slug()
     if not valid_slug(slug):
         raise ValueError(msg.bad_slug)
-    conn = r()
-    if conn.exists(f"slug:{slug}"):
+    if _one("SELECT 1 AS n FROM projects WHERE slug = %s", (slug,)):
         if auto:
             slug = f"{slug[:53]}-{make_slug()}" if slug_from_name(name) else make_slug()
         else:
             raise ValueError(msg.slug_taken)
-        if conn.exists(f"slug:{slug}"):
+        if _one("SELECT 1 AS n FROM projects WHERE slug = %s", (slug,)):
             raise ValueError(msg.slug_taken)
     pid = uuid.uuid4().hex
-    conn.sadd("projects", pid)
-    mapping = {
-        "name": name,
-        "slug": slug,
-        "created_at": str(int(time.time())),
-    }
-    mapping.update({k: str(v) for k, v in default_settings().items()})
-    conn.hset(f"project:{pid}", mapping=mapping)
-    conn.set(f"slug:{slug}", pid)
+    defaults = default_settings()
+    with pg().connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO projects (
+              id, name, slug, created_at,
+              slideshow_interval, slideshow_queue_max, slideshow_per_device,
+              slideshow_fade, slideshow_mode, lottery_sphere_max, lottery_seconds
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                pid,
+                name,
+                slug,
+                time.time(),
+                defaults["slideshow_interval"],
+                defaults["slideshow_queue_max"],
+                defaults["slideshow_per_device"],
+                defaults["slideshow_fade"],
+                defaults["slideshow_mode"],
+                defaults["lottery_sphere_max"],
+                defaults["lottery_seconds"],
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO kuji_config (project_id, per_user)
+            VALUES (%s, %s)
+            """,
+            (pid, appsetting.kuji_per_user),
+        )
     photo_dir(pid).mkdir(parents=True, exist_ok=True)
     if owner and not is_root(owner):
         set_user_role(owner, pid, "admin")
@@ -448,36 +459,17 @@ def create_project(name, slug, owner=None):
 
 
 def wipe_tickets(project_id):
-    conn = r()
-    serials = conn.zrange(f"tickets:{project_id}", 0, -1)
-    devices = conn.smembers(f"devices:{project_id}")
-    pipe = conn.pipeline()
-    for serial in serials:
-        pipe.delete(f"ticket:{project_id}:{serial}")
-    pipe.delete(f"tickets:{project_id}")
-    pipe.delete(f"ticket_seq:{project_id}")
-    pipe.delete(f"lottery_won:{project_id}")
-    for device_id in devices:
-        pipe.delete(f"device_photos:{project_id}:{device_id}")
-        pipe.delete(f"device_chance:{project_id}:{device_id}")
-        pipe.delete(f"device_eligible:{project_id}:{device_id}")
-        pipe.delete(f"device_pending:{project_id}:{device_id}")
-        pipe.delete(f"kuji_earned:{project_id}:{device_id}")
-    pipe.execute()
+    with pg().connection() as conn:
+        conn.execute("DELETE FROM tickets WHERE project_id = %s", (project_id,))
+        conn.execute("DELETE FROM ticket_seq WHERE project_id = %s", (project_id,))
+        conn.execute("DELETE FROM lottery_won WHERE project_id = %s", (project_id,))
     kuji_reset(project_id)
-    conn.delete(f"devices:{project_id}")
 
 
 def wipe_photos(project_id, delete_files):
-    conn = r()
-    ids = conn.zrange(f"photos:{project_id}", 0, -1)
-    pipe = conn.pipeline()
-    for pid in ids:
-        pipe.delete(f"photo:{project_id}:{pid}")
-    pipe.delete(f"photos:{project_id}")
-    pipe.delete(f"slideshow:{project_id}")
-    pipe.delete(f"slideshow_q:{project_id}")
-    pipe.execute()
+    with pg().connection() as conn:
+        conn.execute("DELETE FROM photos WHERE project_id = %s", (project_id,))
+    r().delete(f"slideshow:{project_id}", f"slideshow_q:{project_id}")
     wipe_tickets(project_id)
     if delete_files:
         d = photo_dir(project_id)
@@ -503,17 +495,9 @@ def delete_project(project_id, delete_files):
     if not p:
         raise ValueError(msg.project_missing)
     wipe_photos(project_id, delete_files=delete_files)
-    conn = r()
-    users = conn.smembers(f"project_users:{project_id}")
-    pipe = conn.pipeline()
-    for name in users:
-        pipe.hdel(f"user_projects:{name}", project_id)
-    pipe.delete(f"project_users:{project_id}")
-    pipe.delete(f"project:{project_id}")
-    pipe.delete(f"kuji:{project_id}")
-    pipe.delete(f"slug:{p['slug']}")
-    pipe.srem("projects", project_id)
-    pipe.execute()
+    with pg().connection() as conn:
+        conn.execute("DELETE FROM projects WHERE id = %s", (project_id,))
+    r().delete(f"slideshow:{project_id}", f"slideshow_q:{project_id}")
     return p
 
 
@@ -521,22 +505,15 @@ def ensure_root():
     name = (admin_config.username or "").strip()
     if not name:
         return
-    try:
-        conn = r()
-    except redis.exceptions.ConnectionError:
-        return
-    if conn.exists(f"user:{name}"):
-        return
-    conn.sadd("users", name)
-    conn.hset(
-        f"user:{name}",
-        mapping={
-            "password": generate_password_hash(admin_config.password),
-            "is_root": "1",
-            "lang": "zh",
-            "created_at": str(int(time.time())),
-        },
-    )
+    with pg().connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO users (name, password, is_root, lang, created_at)
+            VALUES (%s, %s, TRUE, 'zh', %s)
+            ON CONFLICT (name) DO NOTHING
+            """,
+            (name, generate_password_hash(admin_config.password), time.time()),
+        )
 
 
 def valid_username(name):
@@ -546,11 +523,11 @@ def valid_username(name):
 def get_user(name):
     if not name:
         return None
-    data = r().hgetall(f"user:{name}")
+    data = _one("SELECT * FROM users WHERE name = %s", (name,))
     if not data or not data.get("password"):
         return None
     data["name"] = name
-    data["is_root"] = data.get("is_root") == "1"
+    data["is_root"] = bool(data.get("is_root"))
     data["lang"] = msg.normalize_lang(data.get("lang"))
     return data
 
@@ -568,19 +545,16 @@ def create_user(name, password):
         raise ValueError(msg.bad_username)
     if not 4 <= len(password or "") <= 72:
         raise ValueError(msg.bad_password)
-    conn = r()
-    if conn.exists(f"user:{name}"):
+    if _one("SELECT 1 AS n FROM users WHERE name = %s", (name,)):
         raise ValueError(msg.username_taken)
-    conn.sadd("users", name)
-    conn.hset(
-        f"user:{name}",
-        mapping={
-            "password": generate_password_hash(password),
-            "is_root": "0",
-            "lang": "zh",
-            "created_at": str(int(time.time())),
-        },
-    )
+    with pg().connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO users (name, password, is_root, lang, created_at)
+            VALUES (%s, %s, FALSE, 'zh', %s)
+            """,
+            (name, generate_password_hash(password), time.time()),
+        )
     return get_user(name)
 
 
@@ -589,7 +563,11 @@ def set_password(name, password):
         raise ValueError(msg.user_missing)
     if not 4 <= len(password or "") <= 72:
         raise ValueError(msg.bad_password)
-    r().hset(f"user:{name}", "password", generate_password_hash(password))
+    with pg().connection() as conn:
+        conn.execute(
+            "UPDATE users SET password = %s WHERE name = %s",
+            (generate_password_hash(password), name),
+        )
 
 
 def change_password(name, old, new):
@@ -604,29 +582,25 @@ def delete_user(name):
         raise ValueError(msg.user_missing)
     if u["is_root"]:
         raise ValueError(msg.cannot_delete_root)
-    conn = r()
-    pids = conn.hkeys(f"user_projects:{name}")
-    pipe = conn.pipeline()
-    for pid in pids:
-        pipe.srem(f"project_users:{pid}", name)
-    pipe.delete(f"user_projects:{name}")
-    pipe.delete(f"user:{name}")
-    pipe.srem("users", name)
-    pipe.execute()
+    with pg().connection() as conn:
+        conn.execute("DELETE FROM users WHERE name = %s", (name,))
 
 
 def user_roles(name):
-    return r().hgetall(f"user_projects:{name}") or {}
+    rows = _all(
+        "SELECT project_id, role FROM user_projects WHERE user_name = %s", (name,)
+    )
+    return {row["project_id"]: row["role"] for row in rows}
 
 
 def list_users():
-    names = sorted(r().smembers("users"), key=str.lower)
+    rows = _all("SELECT name FROM users ORDER BY LOWER(name)")
     out = []
-    for name in names:
-        u = get_user(name)
+    for row in rows:
+        u = get_user(row["name"])
         if not u:
             continue
-        u["roles"] = user_roles(name)
+        u["roles"] = user_roles(row["name"])
         out.append(u)
     return out
 
@@ -642,7 +616,14 @@ def user_role(name, project_id):
         return None
     if u["is_root"]:
         return "root"
-    role = r().hget(f"user_projects:{name}", project_id)
+    row = _one(
+        """
+        SELECT role FROM user_projects
+        WHERE user_name = %s AND project_id = %s
+        """,
+        (name, project_id),
+    )
+    role = row["role"] if row else None
     return role if role in ROLES else None
 
 
@@ -652,18 +633,29 @@ def set_user_role(name, project_id, role):
         raise ValueError(msg.user_missing)
     if u["is_root"]:
         raise ValueError(msg.cannot_assign_root)
-    if not r().exists(f"project:{project_id}"):
+    if not get_project(project_id):
         raise ValueError(msg.project_missing)
     role = (role or "").strip()
-    conn = r()
-    if not role:
-        conn.hdel(f"user_projects:{name}", project_id)
-        conn.srem(f"project_users:{project_id}", name)
-        return
-    if role not in ROLES:
-        raise ValueError(msg.bad_role)
-    conn.hset(f"user_projects:{name}", project_id, role)
-    conn.sadd(f"project_users:{project_id}", name)
+    with pg().connection() as conn:
+        if not role:
+            conn.execute(
+                """
+                DELETE FROM user_projects
+                WHERE user_name = %s AND project_id = %s
+                """,
+                (name, project_id),
+            )
+            return
+        if role not in ROLES:
+            raise ValueError(msg.bad_role)
+        conn.execute(
+            """
+            INSERT INTO user_projects (user_name, project_id, role)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (user_name, project_id) DO UPDATE SET role = EXCLUDED.role
+            """,
+            (name, project_id, role),
+        )
 
 
 def save_user_roles(name, form, project_ids):
@@ -672,14 +664,16 @@ def save_user_roles(name, form, project_ids):
 
 
 def user_lang(name):
-    return msg.normalize_lang(r().hget(f"user:{name}", "lang"))
+    row = _one("SELECT lang FROM users WHERE name = %s", (name,))
+    return msg.normalize_lang(row["lang"] if row else None)
 
 
 def set_user_lang(name, lang):
     if not get_user(name):
         raise ValueError(msg.user_missing)
     lang = msg.normalize_lang(lang)
-    r().hset(f"user:{name}", "lang", lang)
+    with pg().connection() as conn:
+        conn.execute("UPDATE users SET lang = %s WHERE name = %s", (lang, name))
     return lang
 
 
@@ -688,7 +682,7 @@ def visible_ids(name):
     if not u:
         return []
     if u["is_root"]:
-        return sorted(r().smembers("projects"))
+        return [row["id"] for row in _all("SELECT id FROM projects")]
     return list(user_roles(name).keys())
 
 
@@ -697,7 +691,7 @@ def staff_ids(name):
     if not u:
         return []
     if u["is_root"]:
-        return sorted(r().smembers("projects"))
+        return [row["id"] for row in _all("SELECT id FROM projects")]
     return [pid for pid, role in user_roles(name).items() if role in STAFF_ROLES]
 
 
@@ -731,112 +725,145 @@ def can_lottery(name, project_id):
     return user_role(name, project_id) in ("root", "admin", "maintainer", "guest")
 
 
-def chance_count(project_id, device_id):
-    conn = r()
-    key = f"device_chance:{project_id}:{device_id}"
-    raw = conn.get(key)
-    if raw is not None:
-        return int(raw)
-    n = 0
-    for serial in conn.zrange(f"tickets:{project_id}", 0, -1):
-        t = _ticket(project_id, serial)
-        if t and t.get("device_id") == device_id:
-            n += 1
-    conn.set(key, n, ex=ttl_seconds())
-    return n
-
-
-def add_ticket(project_id, photo_id, device_id):
-    now = time.time()
-    ttl = ttl_seconds()
-    conn = r()
-    serial = f"{conn.incr(f'ticket_seq:{project_id}'):06d}"
-    conn.set(
-        f"ticket:{project_id}:{serial}",
-        json.dumps(
-            {"photo_id": photo_id, "device_id": device_id, "ts": now},
-            ensure_ascii=False,
-        ),
-        ex=ttl,
+def chance_count(project_id, device_id, conn=None):
+    return _n(
+        _one(
+            """
+            SELECT COUNT(*) AS n FROM tickets
+            WHERE project_id = %s AND device_id = %s
+            """,
+            (project_id, device_id),
+            conn=conn,
+        )
     )
-    conn.zadd(f"tickets:{project_id}", {serial: now})
-    n = conn.incr(f"device_chance:{project_id}:{device_id}")
-    conn.expire(f"device_chance:{project_id}:{device_id}", ttl)
-    return serial, int(n)
 
 
-def add_photo(project_id, photo_id, caption, device_id, rebuild=True):
-    """Save the photo record; chances are granted later by the detector."""
+def _next_serial(conn, project_id):
+    row = conn.execute(
+        """
+        INSERT INTO ticket_seq (project_id, n) VALUES (%s, 1)
+        ON CONFLICT (project_id) DO UPDATE SET n = ticket_seq.n + 1
+        RETURNING n
+        """,
+        (project_id,),
+    ).fetchone()
+    return f"{row['n']:06d}"
+
+
+def add_ticket(project_id, photo_id, device_id, conn=None):
     now = time.time()
-    ttl = ttl_seconds()
-    conn = r()
-    conn.set(
-        f"photo:{project_id}:{photo_id}",
-        json.dumps(
-            {"caption": caption, "ts": now, "device_id": device_id, "person": None},
-            ensure_ascii=False,
-        ),
-        ex=ttl,
-    )
-    conn.zadd(f"photos:{project_id}", {photo_id: now})
-    conn.sadd(f"devices:{project_id}", device_id)
-    conn.zadd(f"device_photos:{project_id}:{device_id}", {photo_id: now})
-    conn.sadd(f"device_pending:{project_id}:{device_id}", photo_id)
-    conn.expire(f"device_pending:{project_id}:{device_id}", ttl)
-    conn.lpush(
+
+    def run(c):
+        serial = _next_serial(c, project_id)
+        c.execute(
+            """
+            INSERT INTO tickets (project_id, serial, photo_id, device_id, ts)
+            VALUES (%s, %s, %s, %s, %s)
+            """,
+            (project_id, serial, photo_id, device_id, now),
+        )
+        n = chance_count(project_id, device_id, conn=c)
+        return serial, n
+
+    if conn is not None:
+        return run(conn)
+    with pg().connection() as c:
+        return run(c)
+
+
+def enqueue_detect(project_id, photo_id, device_id):
+    r().lpush(
         DETECT_Q,
         json.dumps(
             {"project_id": project_id, "photo_id": photo_id, "device_id": device_id}
         ),
     )
+
+
+def requeue_pending():
+    for row in _all(
+        "SELECT project_id, id, device_id FROM photos WHERE person IS NULL"
+    ):
+        enqueue_detect(row["project_id"], row["id"], row["device_id"])
+
+
+def add_photo(project_id, photo_id, caption, device_id, rebuild=True):
+    """Save the photo record; chances are granted later by the detector."""
+    now = time.time()
+    with pg().connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO photos (project_id, id, caption, device_id, ts, person)
+            VALUES (%s, %s, %s, %s, %s, NULL)
+            """,
+            (project_id, photo_id, caption or "", device_id, now),
+        )
+        conn.execute(
+            """
+            INSERT INTO devices (id) VALUES (%s)
+            ON CONFLICT (id) DO NOTHING
+            """,
+            (device_id,),
+        )
+    enqueue_detect(project_id, photo_id, device_id)
     if rebuild:
         rebuild_slideshow_queue(project_id)
 
 
-def grant_person(project_id, photo_id, device_id, ts):
+def grant_person(project_id, photo_id, device_id, ts, conn=None):
     cap = appsetting.lottery_chance_max
-    ttl = ttl_seconds()
-    conn = r()
-    if chance_count(project_id, device_id) >= cap:
-        drop_oldest_ticket(project_id, device_id)
-    _, n = add_ticket(project_id, photo_id, device_id)
-    if n > cap:
-        drop_oldest_ticket(project_id, device_id)
-        conn.set(f"device_chance:{project_id}:{device_id}", cap, ex=ttl)
-    conn.zadd(f"device_eligible:{project_id}:{device_id}", {photo_id: ts})
-    conn.expire(f"device_eligible:{project_id}:{device_id}", ttl)
-    conn.incr(f"kuji_earned:{project_id}:{device_id}")
-    conn.expire(f"kuji_earned:{project_id}:{device_id}", ttl)
+
+    def run(c):
+        if chance_count(project_id, device_id, conn=c) >= cap:
+            drop_oldest_ticket(project_id, device_id, conn=c)
+        _, n = add_ticket(project_id, photo_id, device_id, conn=c)
+        if n > cap:
+            drop_oldest_ticket(project_id, device_id, conn=c)
+
+    if conn is not None:
+        return run(conn)
+    with pg().connection() as c:
+        run(c)
 
 
 def set_person(project_id, photo_id, device_id, person):
     """Record the detector result once; a person grants lottery + kuji chances."""
-    conn = r()
-    key = f"photo:{project_id}:{photo_id}"
-    raw = conn.get(key)
-    if not raw:
-        return
-    data = json.loads(raw)
-    if data.get("person") is not None:
-        return
-    data["person"] = bool(person)
-    conn.set(key, json.dumps(data, ensure_ascii=False), keepttl=True)
-    did = data.get("device_id") or device_id
-    conn.srem(f"device_pending:{project_id}:{did}", photo_id)
-    if person:
-        grant_person(project_id, photo_id, did, data.get("ts") or time.time())
+    with pg().connection() as conn:
+        with conn.transaction():
+            row = conn.execute(
+                """
+                SELECT * FROM photos
+                WHERE project_id = %s AND id = %s
+                FOR UPDATE
+                """,
+                (project_id, photo_id),
+            ).fetchone()
+            if not row or row.get("person") is not None:
+                return
+            conn.execute(
+                """
+                UPDATE photos SET person = %s
+                WHERE project_id = %s AND id = %s
+                """,
+                (bool(person), project_id, photo_id),
+            )
+            if person:
+                grant_person(
+                    project_id,
+                    photo_id,
+                    row.get("device_id") or device_id,
+                    row.get("ts") or time.time(),
+                    conn=conn,
+                )
 
 
 def photo_status(project_id, device_id, photo_ids):
     out = {}
     for pid in photo_ids[:20]:
-        raw = r().get(f"photo:{project_id}:{pid}")
-        if not raw:
+        item = load_photo(project_id, pid)
+        if not item or item.get("device_id") != device_id:
             continue
-        data = json.loads(raw)
-        if data.get("device_id") != device_id:
-            continue
-        out[pid] = data.get("person")
+        out[pid] = item.get("person")
     return {
         "photos": out,
         "chances": chance_count(project_id, device_id),
@@ -847,19 +874,28 @@ def photo_status(project_id, device_id, photo_ids):
 def nickname_of(device_id):
     if not device_id:
         return ""
-    return r().get(f"device_name:{device_id}") or ""
+    row = _one("SELECT nickname FROM devices WHERE id = %s", (device_id,))
+    return (row["nickname"] if row else "") or ""
 
 
 def set_nickname(device_id, name):
     name = (name or "").strip()
     if not name or len(name) > 20:
         raise ValueError(msg.nickname_bad)
-    r().set(f"device_name:{device_id}", name)
+    with pg().connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO devices (id, nickname) VALUES (%s, %s)
+            ON CONFLICT (id) DO UPDATE SET nickname = EXCLUDED.nickname
+            """,
+            (device_id, name),
+        )
     return name
 
 
 def device_lang(device_id):
-    raw = r().get(f"device_lang:{device_id}")
+    row = _one("SELECT lang FROM devices WHERE id = %s", (device_id,))
+    raw = row["lang"] if row else ""
     if not raw:
         return ""
     return msg.normalize_lang(raw)
@@ -867,15 +903,25 @@ def device_lang(device_id):
 
 def set_device_lang(device_id, lang):
     lang = msg.normalize_lang(lang)
-    r().set(f"device_lang:{device_id}", lang)
+    with pg().connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO devices (id, lang) VALUES (%s, %s)
+            ON CONFLICT (id) DO UPDATE SET lang = EXCLUDED.lang
+            """,
+            (device_id, lang),
+        )
     return lang
 
 
 def load_photo(project_id, photo_id):
-    raw = r().get(f"photo:{project_id}:{photo_id}")
-    if not raw:
+    row = _one(
+        "SELECT * FROM photos WHERE project_id = %s AND id = %s",
+        (project_id, photo_id),
+    )
+    if not row:
         return None
-    data = json.loads(raw)
+    data = dict(row)
     data["id"] = photo_id
     data["url"] = photo_url(project_id, photo_id)
     data["nickname"] = nickname_of(data.get("device_id"))
@@ -883,46 +929,63 @@ def load_photo(project_id, photo_id):
 
 
 def drop_photo(project_id, photo_id, rebuild=True):
-    r().zrem(f"photos:{project_id}", photo_id)
-    r().delete(f"photo:{project_id}:{photo_id}")
+    with pg().connection() as conn:
+        conn.execute(
+            "DELETE FROM photos WHERE project_id = %s AND id = %s",
+            (project_id, photo_id),
+        )
     photo_path(project_id, photo_id).unlink(missing_ok=True)
     if rebuild:
         rebuild_slideshow_queue(project_id)
 
 
 def sweep_expired(project_id):
-    ids = r().zrange(f"photos:{project_id}", 0, -1)
+    cutoff = time.time() - ttl_seconds()
+    rows = _all(
+        "SELECT id FROM photos WHERE project_id = %s AND ts < %s",
+        (project_id, cutoff),
+    )
     kept = []
-    for pid in ids:
-        item = load_photo(project_id, pid)
-        if item is None:
-            drop_photo(project_id, pid, rebuild=False)
-            continue
-        kept.append(item)
+    for row in rows:
+        drop_photo(project_id, row["id"], rebuild=False)
+    for row in _all(
+        "SELECT id FROM photos WHERE project_id = %s ORDER BY ts",
+        (project_id,),
+    ):
+        item = load_photo(project_id, row["id"])
+        if item:
+            kept.append(item)
+    rebuild_slideshow_queue(project_id)
     return kept
 
 
 def rebuild_slideshow_queue(project_id, cfgp=None):
-    conn = r()
-    zkey = f"photos:{project_id}"
     qkey = f"slideshow_q:{project_id}"
-    total = conn.zcard(zkey)
     cfgp = cfgp or settings_of(project_id)
     cap = cfgp["slideshow_queue_max"]
     per = cfgp["slideshow_per_device"]
+    total = _n(_one("SELECT COUNT(*) AS n FROM photos WHERE project_id = %s", (project_id,)))
     if total <= cap:
-        mapping = dict(conn.zrange(zkey, 0, -1, withscores=True))
-    else:
-        picked = {}
-        for did in conn.smembers(f"devices:{project_id}"):
-            for pid, score in conn.zrevrange(
-                f"device_photos:{project_id}:{did}", 0, per - 1, withscores=True
-            ):
-                picked[pid] = score
-        mapping = dict(
-            sorted(picked.items(), key=lambda x: x[1], reverse=True)[:cap]
+        rows = _all(
+            "SELECT id, ts FROM photos WHERE project_id = %s",
+            (project_id,),
         )
-    pipe = conn.pipeline()
+    else:
+        rows = _all(
+            """
+            SELECT id, ts FROM (
+              SELECT id, ts,
+                ROW_NUMBER() OVER (PARTITION BY device_id ORDER BY ts DESC) AS rn
+              FROM photos WHERE project_id = %s
+            ) x
+            WHERE rn <= %s
+            ORDER BY ts DESC
+            LIMIT %s
+            """,
+            (project_id, per, cap),
+        )
+    mapping = {row["id"]: float(row["ts"]) for row in rows}
+    pipe = r().pipeline()
     pipe.delete(qkey)
     if mapping:
         pipe.zadd(qkey, mapping)
@@ -945,8 +1008,12 @@ def slideshow_state(project_id):
     interval = cfgp["slideshow_interval"]
     qkey = f"slideshow_q:{project_id}"
     conn = r()
-    if conn.zcard(qkey) == 0 and conn.zcard(f"photos:{project_id}") > 0:
-        rebuild_slideshow_queue(project_id, cfgp)
+    if conn.zcard(qkey) == 0:
+        n = _n(
+            _one("SELECT COUNT(*) AS n FROM photos WHERE project_id = %s", (project_id,))
+        )
+        if n > 0:
+            rebuild_slideshow_queue(project_id, cfgp)
     for _ in range(8):
         now = time.time()
         result = advance_script()(
@@ -972,86 +1039,137 @@ def slideshow_state(project_id):
     return _empty_state(time.time(), interval)
 
 
-def _ticket(project_id, serial):
-    raw = r().get(f"ticket:{project_id}:{serial}")
-    if not raw:
+def _ticket(project_id, serial, conn=None):
+    row = _one(
+        "SELECT * FROM tickets WHERE project_id = %s AND serial = %s",
+        (project_id, serial),
+        conn=conn,
+    )
+    if not row:
         return None
-    data = json.loads(raw)
+    data = dict(row)
     data["serial"] = serial
     return data
 
 
-def drop_ticket(project_id, serial):
-    t = _ticket(project_id, serial)
-    conn = r()
-    conn.zrem(f"tickets:{project_id}", serial)
-    conn.delete(f"ticket:{project_id}:{serial}")
-    if t and t.get("device_id"):
-        key = f"device_chance:{project_id}:{t['device_id']}"
-        n = conn.decr(key)
-        if n < 0:
-            conn.set(key, 0, ex=ttl_seconds())
+def drop_ticket(project_id, serial, conn=None):
+    def run(c):
+        c.execute(
+            "DELETE FROM tickets WHERE project_id = %s AND serial = %s",
+            (project_id, serial),
+        )
+
+    if conn is not None:
+        return run(conn)
+    with pg().connection() as c:
+        run(c)
 
 
-def drop_oldest_ticket(project_id, device_id):
-    for serial in r().zrange(f"tickets:{project_id}", 0, -1):
-        t = _ticket(project_id, serial)
-        if t and t.get("device_id") == device_id:
-            drop_ticket(project_id, serial)
-            return True
-    return False
+def drop_oldest_ticket(project_id, device_id, conn=None):
+    def run(c):
+        row = c.execute(
+            """
+            SELECT serial FROM tickets
+            WHERE project_id = %s AND device_id = %s
+            ORDER BY ts ASC
+            LIMIT 1
+            """,
+            (project_id, device_id),
+        ).fetchone()
+        if not row:
+            return False
+        drop_ticket(project_id, row["serial"], conn=c)
+        return True
+
+    if conn is not None:
+        return run(conn)
+    with pg().connection() as c:
+        return run(c)
 
 
 def latest_photo_ids(project_id, device_id, n):
-    return set(
-        r().zrevrange(f"device_eligible:{project_id}:{device_id}", 0, n - 1)
+    rows = _all(
+        """
+        SELECT id FROM photos
+        WHERE project_id = %s AND device_id = %s AND person IS TRUE
+        ORDER BY ts DESC
+        LIMIT %s
+        """,
+        (project_id, device_id, n),
     )
+    return {row["id"] for row in rows}
 
 
 def device_photos(project_id, device_id, exclude=None, limit=None):
-    key = f"device_photos:{project_id}:{device_id}"
-    if limit is None:
-        ids = r().zrange(key, 0, -1)
-    else:
-        ids = r().zrevrange(key, 0, max(0, limit - 1))
+    sql = """
+        SELECT id FROM photos
+        WHERE project_id = %s AND device_id = %s
+        ORDER BY ts DESC
+    """
+    params = [project_id, device_id]
+    if limit is not None:
+        sql += " LIMIT %s"
+        params.append(max(0, limit))
     out = []
-    for pid in ids:
-        if exclude and pid == exclude:
+    for row in _all(sql, params):
+        if exclude and row["id"] == exclude:
             continue
-        item = load_photo(project_id, pid)
+        item = load_photo(project_id, row["id"])
         if item is None:
-            r().zrem(key, pid)
             continue
         out.append({"id": item["id"], "url": item["url"]})
     return out
 
 
 def won_devices(project_id):
-    return r().smembers(f"lottery_won:{project_id}")
+    return {row["device_id"] for row in _all(
+        "SELECT device_id FROM lottery_won WHERE project_id = %s", (project_id,)
+    )}
 
 
 def mark_won(project_id, device_id):
-    if device_id:
-        r().sadd(f"lottery_won:{project_id}", device_id)
+    if not device_id:
+        return
+    with pg().connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO lottery_won (project_id, device_id)
+            VALUES (%s, %s)
+            ON CONFLICT DO NOTHING
+            """,
+            (project_id, device_id),
+        )
 
 
 def reset_lottery_winners(project_id):
-    if not r().exists(f"project:{project_id}"):
+    if not get_project(project_id):
         raise ValueError(msg.project_missing)
-    r().delete(f"lottery_won:{project_id}")
+    with pg().connection() as conn:
+        conn.execute("DELETE FROM lottery_won WHERE project_id = %s", (project_id,))
 
 
 def lottery_pool(project_id):
     cap = appsetting.lottery_chance_max
     won = won_devices(project_id)
+    rows = _all(
+        """
+        SELECT id, device_id FROM (
+          SELECT id, device_id, ts,
+            ROW_NUMBER() OVER (PARTITION BY device_id ORDER BY ts DESC) AS rn
+          FROM photos
+          WHERE project_id = %s AND person IS TRUE
+        ) x
+        WHERE rn <= %s
+        """,
+        (project_id, cap),
+    )
     out = []
-    for did in r().smembers(f"devices:{project_id}"):
-        if did in won:
+    for row in rows:
+        if row["device_id"] in won:
             continue
-        for pid in r().zrevrange(f"device_eligible:{project_id}:{did}", 0, cap - 1):
-            item = load_photo(project_id, pid)
-            if item:
-                out.append(item)
+        item = load_photo(project_id, row["id"])
+        if item:
+            out.append(item)
     return out
 
 
@@ -1073,7 +1191,13 @@ def sphere_photos(project_id, limit):
 def draw_lottery(project_id):
     cap = appsetting.lottery_chance_max
     won = won_devices(project_id)
-    serials = list(r().zrange(f"tickets:{project_id}", 0, -1))
+    serials = [
+        row["serial"]
+        for row in _all(
+            "SELECT serial FROM tickets WHERE project_id = %s ORDER BY ts",
+            (project_id,),
+        )
+    ]
     random.shuffle(serials)
     winner = None
     for serial in serials:
@@ -1099,7 +1223,15 @@ def draw_lottery(project_id):
     others = device_photos(
         project_id, t["device_id"], exclude=photo["id"], limit=cap
     )
-    total = int(r().zcard(f"device_photos:{project_id}:{t['device_id']}") or 0)
+    total = _n(
+        _one(
+            """
+            SELECT COUNT(*) AS n FROM photos
+            WHERE project_id = %s AND device_id = %s
+            """,
+            (project_id, t["device_id"]),
+        )
+    )
     cfgp = settings_of(project_id)
     sphere = sphere_photos(project_id, cfgp["lottery_sphere_max"])
     mark_won(project_id, t.get("device_id"))
@@ -1141,8 +1273,22 @@ def kuji_names_of(raw, grade):
     }
 
 
-def kuji_settings(project_id):
-    raw = r().hgetall(f"kuji:{project_id}") or {}
+def _kuji_raw(project_id, conn=None):
+    row = _one("SELECT * FROM kuji_config WHERE project_id = %s", (project_id,), conn=conn)
+    if not row:
+        return {}
+    raw = {
+        "per_user": row["per_user"],
+    }
+    for g in KUJI_GRADES:
+        raw[g] = row[f"total_{g.lower()}"]
+        raw[f"label_{g}"] = row[f"label_{g.lower()}"]
+        raw[f"label_en_{g}"] = row[f"label_en_{g.lower()}"]
+    return raw
+
+
+def kuji_settings(project_id, conn=None):
+    raw = _kuji_raw(project_id, conn=conn)
     out = {
         "per_user": appsetting.kuji_per_user,
         "totals": {},
@@ -1150,19 +1296,19 @@ def kuji_settings(project_id):
     }
     try:
         out["per_user"] = int(raw["per_user"])
-    except (KeyError, ValueError):
+    except (KeyError, TypeError, ValueError):
         pass
     for g in KUJI_GRADES:
         try:
             out["totals"][g] = int(raw.get(g) or 0)
-        except ValueError:
+        except (TypeError, ValueError):
             out["totals"][g] = 0
         out["names"][g] = kuji_names_of(raw, g)
     return out
 
 
 def kuji_save(project_id, form):
-    if not r().exists(f"project:{project_id}"):
+    if not get_project(project_id):
         raise ValueError(msg.project_missing)
     try:
         per = int(form.get("per_user"))
@@ -1179,26 +1325,64 @@ def kuji_save(project_id, form):
         en = (form.get(f"label_en_{g}") or "").strip()
         if len(zh) > KUJI_LABEL_MAX or len(en) > KUJI_LABEL_MAX:
             raise ValueError(msg.kuji_label_too_long)
-        labels[f"label_{g}"] = zh
-        labels[f"label_en_{g}"] = en
-    bad = _script("kuji_save", _KUJI_SAVE_LUA)(
-        keys=[f"kuji:{project_id}", f"kuji_drawn:{project_id}"],
-        args=[per, *totals],
-    )
-    if bad:
-        raise ValueError(msg.kuji_total_below_drawn.format(grade=bad))
-    r().hset(f"kuji:{project_id}", mapping=labels)
+        labels[g] = (zh, en)
+    with pg().connection() as conn:
+        with conn.transaction():
+            conn.execute(
+                "SELECT 1 FROM kuji_config WHERE project_id = %s FOR UPDATE",
+                (project_id,),
+            )
+            drawn = {
+                row["grade"]: int(row["n"])
+                for row in conn.execute(
+                    """
+                    SELECT grade, COUNT(*) AS n FROM kuji_draws
+                    WHERE project_id = %s GROUP BY grade
+                    """,
+                    (project_id,),
+                ).fetchall()
+            }
+            for g, total in zip(KUJI_GRADES, totals):
+                if total < drawn.get(g, 0):
+                    raise ValueError(msg.kuji_total_below_drawn.format(grade=g))
+            conn.execute(
+                """
+                INSERT INTO kuji_config (
+                  project_id, per_user,
+                  total_a, total_b, total_c, total_d, total_e,
+                  label_a, label_b, label_c, label_d, label_e,
+                  label_en_a, label_en_b, label_en_c, label_en_d, label_en_e
+                ) VALUES (
+                  %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                )
+                ON CONFLICT (project_id) DO UPDATE SET
+                  per_user = EXCLUDED.per_user,
+                  total_a = EXCLUDED.total_a, total_b = EXCLUDED.total_b,
+                  total_c = EXCLUDED.total_c, total_d = EXCLUDED.total_d,
+                  total_e = EXCLUDED.total_e,
+                  label_a = EXCLUDED.label_a, label_b = EXCLUDED.label_b,
+                  label_c = EXCLUDED.label_c, label_d = EXCLUDED.label_d,
+                  label_e = EXCLUDED.label_e,
+                  label_en_a = EXCLUDED.label_en_a, label_en_b = EXCLUDED.label_en_b,
+                  label_en_c = EXCLUDED.label_en_c, label_en_d = EXCLUDED.label_en_d,
+                  label_en_e = EXCLUDED.label_en_e
+                """,
+                (
+                    project_id,
+                    per,
+                    *totals,
+                    *[labels[g][0] for g in KUJI_GRADES],
+                    *[labels[g][1] for g in KUJI_GRADES],
+                ),
+            )
 
 
 def kuji_reset(project_id):
-    conn = r()
-    pipe = conn.pipeline()
-    for k in ("kuji_drawn", "kuji_draws", "kuji_claimed", "kuji_seq"):
-        pipe.delete(f"{k}:{project_id}")
-    for did in conn.smembers(f"devices:{project_id}"):
-        pipe.delete(f"kuji_used:{project_id}:{did}")
-        pipe.delete(f"kuji_mine:{project_id}:{did}")
-    pipe.execute()
+    with pg().connection() as conn:
+        conn.execute("DELETE FROM kuji_draws WHERE project_id = %s", (project_id,))
+        conn.execute(
+            "UPDATE kuji_config SET seq = 0 WHERE project_id = %s", (project_id,)
+        )
 
 
 def _prize_urls(project_id, grade):
@@ -1208,11 +1392,18 @@ def _prize_urls(project_id, grade):
 
 def kuji_state(project_id):
     cfgk = kuji_settings(project_id)
-    drawn = r().hgetall(f"kuji_drawn:{project_id}") or {}
+    drawn_rows = _all(
+        """
+        SELECT grade, COUNT(*) AS n FROM kuji_draws
+        WHERE project_id = %s GROUP BY grade
+        """,
+        (project_id,),
+    )
+    drawn = {row["grade"]: int(row["n"]) for row in drawn_rows}
     grades = []
     for g in KUJI_GRADES:
         total = cfgk["totals"][g]
-        d = min(total, int(drawn.get(g) or 0))
+        d = min(total, drawn.get(g, 0))
         url, thumb = _prize_urls(project_id, g)
         grades.append(
             {"grade": g, **cfgk["names"][g],
@@ -1227,11 +1418,38 @@ def kuji_state(project_id):
     }
 
 
-def kuji_me(project_id, device_id, unlimited=False):
-    conn = r()
-    per = kuji_settings(project_id)["per_user"]
-    earned = int(conn.get(f"kuji_earned:{project_id}:{device_id}") or 0)
-    used = int(conn.get(f"kuji_used:{project_id}:{device_id}") or 0)
+def kuji_me(project_id, device_id, unlimited=False, conn=None):
+    per = kuji_settings(project_id, conn=conn)["per_user"]
+    earned = _n(
+        _one(
+            """
+            SELECT COUNT(*) AS n FROM photos
+            WHERE project_id = %s AND device_id = %s AND person IS TRUE
+            """,
+            (project_id, device_id),
+            conn=conn,
+        )
+    )
+    used = _n(
+        _one(
+            """
+            SELECT COUNT(*) AS n FROM kuji_draws
+            WHERE project_id = %s AND device_id = %s
+            """,
+            (project_id, device_id),
+            conn=conn,
+        )
+    )
+    pending = _n(
+        _one(
+            """
+            SELECT COUNT(*) AS n FROM photos
+            WHERE project_id = %s AND device_id = %s AND person IS NULL
+            """,
+            (project_id, device_id),
+            conn=conn,
+        )
+    )
     left = 1 if unlimited else max(0, min(earned, per) - used)
     return {
         "earned": earned,
@@ -1239,39 +1457,73 @@ def kuji_me(project_id, device_id, unlimited=False):
         "per_user": per,
         "left": left,
         "unlimited": bool(unlimited),
-        "pending": int(conn.scard(f"device_pending:{project_id}:{device_id}") or 0),
+        "pending": pending,
     }
 
 
 def kuji_draw(project_id, device_id, unlimited=False):
-    res = _script("kuji_draw", _KUJI_DRAW_LUA)(
-        keys=[
-            f"kuji:{project_id}",
-            f"kuji_drawn:{project_id}",
-            f"kuji_used:{project_id}:{device_id}",
-            f"kuji_earned:{project_id}:{device_id}",
-            f"kuji_mine:{project_id}:{device_id}",
-            f"kuji_draws:{project_id}",
-            f"kuji_seq:{project_id}",
-        ],
-        args=[
-            random.random(),
-            time.time(),
-            device_id,
-            appsetting.kuji_per_user,
-            "1" if unlimited else "0",
-        ],
-    )
-    if res[0] == "sold_out":
-        raise ValueError(msg.kuji_sold_out)
-    if res[0] != "ok":
-        me = kuji_me(project_id, device_id, unlimited=unlimited)
-        if not unlimited and me["used"] >= me["per_user"]:
-            raise ValueError(msg.kuji_cap_reached.format(n=me["per_user"]))
-        if me["pending"]:
-            raise ValueError(msg.kuji_pending)
-        raise ValueError(msg.kuji_need_photo)
-    _, grade, draw_id = res
+    with pg().connection() as conn:
+        with conn.transaction():
+            cfg = conn.execute(
+                "SELECT * FROM kuji_config WHERE project_id = %s FOR UPDATE",
+                (project_id,),
+            ).fetchone()
+            if not cfg:
+                conn.execute(
+                    "INSERT INTO kuji_config (project_id, per_user) VALUES (%s, %s)",
+                    (project_id, appsetting.kuji_per_user),
+                )
+                cfg = conn.execute(
+                    "SELECT * FROM kuji_config WHERE project_id = %s FOR UPDATE",
+                    (project_id,),
+                ).fetchone()
+            me = kuji_me(project_id, device_id, unlimited=unlimited, conn=conn)
+            if not unlimited and me["used"] >= min(me["earned"], me["per_user"]):
+                if me["used"] >= me["per_user"]:
+                    raise ValueError(msg.kuji_cap_reached.format(n=me["per_user"]))
+                if me["pending"]:
+                    raise ValueError(msg.kuji_pending)
+                raise ValueError(msg.kuji_need_photo)
+            left = []
+            for g in KUJI_GRADES:
+                total = int(cfg[f"total_{g.lower()}"] or 0)
+                drawn = _n(
+                    conn.execute(
+                        """
+                        SELECT COUNT(*) AS n FROM kuji_draws
+                        WHERE project_id = %s AND grade = %s
+                        """,
+                        (project_id, g),
+                    ).fetchone()
+                )
+                left.append(max(0, total - drawn))
+            total_left = sum(left)
+            if total_left == 0:
+                raise ValueError(msg.kuji_sold_out)
+            pick = int(random.random() * total_left)
+            if pick >= total_left:
+                pick = total_left - 1
+            grade = None
+            for g, n in zip(KUJI_GRADES, left):
+                if pick < n:
+                    grade = g
+                    break
+                pick -= n
+            row = conn.execute(
+                """
+                UPDATE kuji_config SET seq = seq + 1
+                WHERE project_id = %s RETURNING seq
+                """,
+                (project_id,),
+            ).fetchone()
+            draw_id = str(row["seq"])
+            conn.execute(
+                """
+                INSERT INTO kuji_draws (project_id, id, grade, device_id, ts)
+                VALUES (%s, %s, %s, %s, %s)
+                """,
+                (project_id, draw_id, grade, device_id, time.time()),
+            )
     url, thumb = _prize_urls(project_id, grade)
     names = kuji_settings(project_id)["names"][grade]
     return {
@@ -1287,36 +1539,53 @@ def kuji_draw(project_id, device_id, unlimited=False):
 
 
 def kuji_mine(project_id, device_id):
-    conn = r()
-    ids = conn.lrange(f"kuji_mine:{project_id}:{device_id}", 0, -1)
-    if not ids:
+    rows = _all(
+        """
+        SELECT id, grade, ts, claimed_at FROM kuji_draws
+        WHERE project_id = %s AND device_id = %s
+        ORDER BY ts
+        """,
+        (project_id, device_id),
+    )
+    if not rows:
         return []
     names = kuji_settings(project_id)["names"]
-    draws = conn.hmget(f"kuji_draws:{project_id}", ids)
-    claimed = conn.hmget(f"kuji_claimed:{project_id}", ids)
     out = []
-    for draw_id, raw, at in zip(ids, draws, claimed):
-        if not raw:
-            continue
-        d = json.loads(raw)
-        url, thumb = _prize_urls(project_id, d["grade"])
-        n = names.get(d["grade"]) or kuji_names_of({}, d["grade"])
+    for row in rows:
+        url, thumb = _prize_urls(project_id, row["grade"])
+        n = names.get(row["grade"]) or kuji_names_of({}, row["grade"])
+        claimed = row.get("claimed_at")
         out.append(
-            {"id": draw_id, "grade": d["grade"],
+            {"id": row["id"], "grade": row["grade"],
              "label": n["label"], "label_zh": n["label_zh"], "label_en": n["label_en"],
-             "ts": d.get("ts"),
+             "ts": row.get("ts"),
              "url": url, "thumb": thumb,
-             "claimed_at": int(at) if at else None}
+             "claimed_at": int(claimed) if claimed else None}
         )
     return out
 
 
 def kuji_claim(project_id, device_id, draw_id):
-    conn = r()
-    raw = conn.hget(f"kuji_draws:{project_id}", draw_id)
-    if not raw or json.loads(raw).get("device_id") != device_id:
-        raise ValueError(msg.kuji_claim_missing)
     now = int(time.time())
-    if not conn.hsetnx(f"kuji_claimed:{project_id}", draw_id, now):
-        raise ValueError(msg.kuji_already_claimed)
+    with pg().connection() as conn:
+        row = conn.execute(
+            """
+            SELECT device_id, claimed_at FROM kuji_draws
+            WHERE project_id = %s AND id = %s
+            """,
+            (project_id, draw_id),
+        ).fetchone()
+        if not row or row["device_id"] != device_id:
+            raise ValueError(msg.kuji_claim_missing)
+        if row["claimed_at"]:
+            raise ValueError(msg.kuji_already_claimed)
+        updated = conn.execute(
+            """
+            UPDATE kuji_draws SET claimed_at = %s
+            WHERE project_id = %s AND id = %s AND claimed_at IS NULL
+            """,
+            (now, project_id, draw_id),
+        )
+        if updated.rowcount != 1:
+            raise ValueError(msg.kuji_already_claimed)
     return now
