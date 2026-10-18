@@ -22,13 +22,8 @@ jobs:
     permissions:
       contents: read
       packages: write
-    outputs:
-      image_tag: ${{ steps.meta.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
-
-      - id: meta
-        run: echo "tag=sha-${GITHUB_SHA}" >> "${GITHUB_OUTPUT}"
 
       - name: Auth GHCR
         env:
@@ -60,9 +55,7 @@ jobs:
           pull: true
           provenance: false
           sbom: false
-          tags: |
-            ${{ env.IMAGE }}:latest
-            ${{ env.IMAGE }}:${{ steps.meta.outputs.tag }}
+          tags: ${{ env.IMAGE }}:latest
 
       - uses: docker/build-push-action@v6
         with:
@@ -74,9 +67,7 @@ jobs:
           pull: true
           provenance: false
           sbom: false
-          tags: |
-            ${{ env.IMAGE_NGINX }}:latest
-            ${{ env.IMAGE_NGINX }}:${{ steps.meta.outputs.tag }}
+          tags: ${{ env.IMAGE_NGINX }}:latest
 
       - uses: docker/build-push-action@v6
         with:
@@ -88,9 +79,7 @@ jobs:
           pull: true
           provenance: false
           sbom: false
-          tags: |
-            ${{ env.IMAGE_DETECTOR }}:latest
-            ${{ env.IMAGE_DETECTOR }}:${{ steps.meta.outputs.tag }}
+          tags: ${{ env.IMAGE_DETECTOR }}:latest
 
   deploy:
     needs: build
