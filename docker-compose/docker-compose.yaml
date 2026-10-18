@@ -43,9 +43,7 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
+    user: "0:0"
     command: redis-server --appendonly yes
     volumes:
-      - redis-data:/data
-
-volumes:
-  redis-data:
+      - "${HOST_PHOTO_DIR:-/Volumes/OWC Envoy Pro FX/photo-upload}/redis:/data"

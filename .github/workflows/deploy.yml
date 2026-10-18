@@ -128,7 +128,7 @@ jobs:
             compose() { docker-compose "$@"; }
           fi
           photo="${HOST_PHOTO_DIR:-/Volumes/OWC Envoy Pro FX/photo-upload}"
-          mkdir -p "$photo/logs"
+          mkdir -p "$photo/logs" "$photo/redis"
           rm -rf /opt/app/photo-upload/logs
           ln -s "$photo/logs" /opt/app/photo-upload/logs
           compose pull

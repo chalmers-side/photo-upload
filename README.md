@@ -8,7 +8,7 @@ Guests upload photos. Multiple screens play the same slideshow. Admins run a lot
 - A photo directory the Docker VM can mount (files stay on the host, not in the image)
 - Port **8000** free
 - Pull access to `ghcr.io/chalmers-chang/photo-upload`, `photo-upload-nginx`, and `photo-upload-detector`
-- Redis is started by Compose (`redis-data` named volume)
+- Redis is started by Compose; AOF lives on the photo disk (`$HOST_PHOTO_DIR/redis`) so a Docker Desktop restart does not wipe projects
 
 Flask alone does **not** serve `/photos/` — nginx does. Use Compose for local debugging too.
 
@@ -103,7 +103,7 @@ python/           uv lockfile only (app code is not here)
 docker-compose/   Dockerfile, compose, nginx.conf, POC stack (poc.sh)
 ```
 
-Request flow: browser → nginx `:8000` → `/photos/*` from disk, everything else to gunicorn. Redis holds projects, photo records, tickets, and the slideshow playhead. JPEG files live on the host bind.
+Request flow: browser → nginx `:8000` → `/photos/*` from disk, everything else to gunicorn. Redis holds projects, photo records, tickets, and the slideshow playhead; its AOF is `$HOST_PHOTO_DIR/redis` so it survives a Docker restart. JPEG files live on the host bind.
 
 ## Architecture notes
 
