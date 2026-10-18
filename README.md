@@ -7,7 +7,7 @@ Guests upload photos. Multiple screens play the same slideshow. Admins run a lot
 - Docker and Compose, **linux/arm64** images (Apple Silicon)
 - A photo directory the Docker VM can mount (files stay on the host, not in the image)
 - Port **8000** free
-- Pull access to `ghcr.io/chalmers-chang/photo-upload`, `photo-upload-nginx`, and `photo-upload-detector`
+- Pull access to `ghcr.io/chalmers-side/photo-upload`, `photo-upload-nginx`, and `photo-upload-detector`
 - Postgres data lives on the photo disk (`$HOST_PHOTO_DIR/postgres`). Redis is cache only (detect queue + slideshow playhead).
 
 Flask alone does **not** serve `/photos/` — nginx does. Use Compose for local debugging too.

@@ -2,7 +2,7 @@ name: photo-upload
 
 services:
   app:
-    image: ghcr.io/chalmers-chang/photo-upload:${IMAGE_TAG:-latest}
+    image: ghcr.io/chalmers-side/photo-upload:${IMAGE_TAG:-latest}
     restart: unless-stopped
     environment:
       PHOTO_DIR: /data/photos
@@ -21,7 +21,7 @@ services:
         condition: service_healthy
 
   detector:
-    image: ghcr.io/chalmers-chang/photo-upload-detector:${IMAGE_TAG:-latest}
+    image: ghcr.io/chalmers-side/photo-upload-detector:${IMAGE_TAG:-latest}
     restart: unless-stopped
     environment:
       PHOTO_DIR: /data/photos
@@ -37,7 +37,7 @@ services:
         condition: service_healthy
 
   nginx:
-    image: ghcr.io/chalmers-chang/photo-upload-nginx:${IMAGE_TAG:-latest}
+    image: ghcr.io/chalmers-side/photo-upload-nginx:${IMAGE_TAG:-latest}
     restart: unless-stopped
     ports:
       - "8000:80"

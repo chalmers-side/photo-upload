@@ -8,9 +8,9 @@ on:
   workflow_dispatch:
 
 env:
-  IMAGE: ghcr.io/chalmers-chang/photo-upload
-  IMAGE_NGINX: ghcr.io/chalmers-chang/photo-upload-nginx
-  IMAGE_DETECTOR: ghcr.io/chalmers-chang/photo-upload-detector
+  IMAGE: ghcr.io/${{ github.repository_owner }}/photo-upload
+  IMAGE_NGINX: ghcr.io/${{ github.repository_owner }}/photo-upload-nginx
+  IMAGE_DETECTOR: ghcr.io/${{ github.repository_owner }}/photo-upload-detector
 
 defaults:
   run:
@@ -56,6 +56,7 @@ jobs:
           provenance: false
           sbom: false
           tags: ${{ env.IMAGE }}:latest
+          labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}
 
       - uses: docker/build-push-action@v6
         with:
@@ -68,6 +69,7 @@ jobs:
           provenance: false
           sbom: false
           tags: ${{ env.IMAGE_NGINX }}:latest
+          labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}
 
       - uses: docker/build-push-action@v6
         with:
@@ -80,6 +82,7 @@ jobs:
           provenance: false
           sbom: false
           tags: ${{ env.IMAGE_DETECTOR }}:latest
+          labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}
 
   deploy:
     needs: build
