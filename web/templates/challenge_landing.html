@@ -1,0 +1,176 @@
+{% extends "base.html" %}
+{% block title %}{{ msg.challenge_title.format(name=project.name) }}{% endblock %}
+{% block extra_head %}
+{% include "_cover_layout.html" %}
+<style>
+  .ch-qr { width: min(240px, 100%); height: auto; margin: 12px auto; display: block; }
+  .ch-history { width: min(720px, 100%); text-align: left; margin-top: 0.4cm; }
+  .ch-history h2 { font-size: 16px; margin: 0 0 8px; }
+  .ch-history li { font-size: 14px; color: var(--muted); margin: 0 0 6px; }
+  .pjt-stage details.ch-qr-box { width: min(720px, 100%); }
+  .pjt-stage details.ch-qr-box summary {
+    cursor: pointer;
+    font-weight: 700;
+    color: var(--ink-fade);
+    list-style: none;
+  }
+  .pjt-stage details.ch-qr-box summary::-webkit-details-marker { display: none; }
+  .ch-wait {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 12px;
+    margin: 8px 0 0;
+  }
+  .ch-wait[hidden] { display: none !important; }
+  .ch-wait-p {
+    display: grid;
+    justify-items: center;
+    gap: 4px;
+    width: 72px;
+  }
+  .ch-wait-p img {
+    width: 56px;
+    height: 56px;
+    border-radius: 50%;
+    border: 3px solid #fff;
+    object-fit: cover;
+    background: #ddd4c6;
+  }
+  .ch-wait-p.is-off img { filter: grayscale(1); opacity: 0.55; }
+  .ch-wait-p span { font-size: 12px; color: var(--muted); text-align: center; }
+  .pjt-stage .actions form[hidden] { display: none !important; }
+</style>
+{% endblock %}
+{% block body %}
+<a class="back-btn" href="{{ url_for('project_home', slug=project.slug) }}">{{ msg.lottery_back }}</a>
+<div class="pjt-stage glass-wait">
+  {% if project.pjt_desktop_show or project.pjt_mobile_show %}
+  <picture>
+    <source media="(max-width: 640px)" srcset="{{ project.pjt_mobile_show }}">
+    <img src="{{ project.pjt_desktop_show }}" alt="" fetchpriority="high">
+  </picture>
+  <div class="pjt-fade" style="opacity: {{ cfg.pjt_fade }}"></div>
+  {% endif %}
+  <div class="glass-stage pjt-ui">
+    <div class="glass-card">
+      <div class="pjt-title-block">
+        <h1>{{ msg.challenge }}</h1>
+      </div>
+      <div class="glass-body">
+        <p class="lead">{{ msg.challenge_lead }}</p>
+        {% for category, message in get_flashed_messages(with_categories=true) %}
+          <p class="flash {{ category }}">{{ message }}</p>
+        {% endfor %}
+        <p class="lead" id="wait-lead">
+          {% if live and live.status == 'lobby' %}
+            {{ msg.challenge_lobby.format(n=live.player_count, k=live.ready_count) }}
+          {% elif live %}
+            {{ msg.challenge_live }}
+          {% endif %}
+        </p>
+        <div class="ch-wait" id="wait-row" {% if not waiting %}hidden{% endif %}>
+          {% for w in waiting %}
+          <div class="ch-wait-p {% if not w.ready %}is-off{% endif %}">
+            {% if w.avatar_url %}<img src="{{ w.avatar_url }}" alt="">{% endif %}
+            <span>{{ w.nickname }}</span>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+      <div class="actions">
+        <details class="ch-qr-box">
+          <summary>{{ msg.challenge_qr }}</summary>
+          <img class="ch-qr" src="{{ url_for('challenge_qr', slug=project.slug) }}" alt="QR">
+        </details>
+        <form method="post" action="{{ url_for('challenge_open', slug=project.slug) }}">
+          <input type="hidden" name="kind" value="demo">
+          <button class="btn" type="submit">{{ msg.challenge_demo }}</button>
+        </form>
+        <form method="post" action="{{ url_for('challenge_open', slug=project.slug) }}">
+          <input type="hidden" name="kind" value="adventure">
+          <button class="btn" type="submit">{{ msg.challenge_adventure }}</button>
+        </form>
+        <form method="post" action="{{ url_for('challenge_start', slug=project.slug) }}" id="start-form" {% if not live or live.status != 'lobby' or not live.all_ready %}hidden{% endif %}>
+          <button class="btn lottery" type="submit">{{ msg.challenge_start }}</button>
+        </form>
+        <a class="btn secondary" href="{{ url_for('challenge_god', slug=project.slug) }}">{{ msg.challenge_god }}</a>
+      </div>
+      <div class="ch-history glass-body">
+        <h2>{{ msg.challenge_history }}</h2>
+        {% if history %}
+        <ul>
+          {% for s in history %}
+          <li>
+            <a href="{{ url_for('challenge_results', slug=project.slug, session_id=s.id) }}">
+              {{ msg.challenge_kind_demo if s.kind == 'demo' else msg.challenge_kind_adventure }}
+              ·
+              {% for p in s.players %}
+                {{ p.nickname }} {{ p.score }}{% if not loop.last %} / {% endif %}
+              {% endfor %}
+            </a>
+          </li>
+          {% endfor %}
+        </ul>
+        {% else %}
+        <p class="lead">{{ msg.challenge_history_empty }}</p>
+        {% endif %}
+      </div>
+    </div>
+    {% include "_credit.html" %}
+  </div>
+</div>
+<script>
+  const godUrl = {{ url_for('challenge_god_api', slug=project.slug) | tojson }};
+  const lobbyCopy = {{ msg.challenge_lobby | tojson }};
+  const liveCopy = {{ msg.challenge_live | tojson }};
+  const lead = document.getElementById("wait-lead");
+  const row = document.getElementById("wait-row");
+  const startForm = document.getElementById("start-form");
+  function fill(s, vals) {
+    return Object.entries(vals).reduce((t, [k, v]) => t.replaceAll("{" + k + "}", String(v)), s);
+  }
+  async function tick() {
+    let data;
+    try {
+      data = await (await fetch(godUrl, { cache: "no-store" })).json();
+    } catch (err) {
+      setTimeout(tick, 1000);
+      return;
+    }
+    const session = data.session;
+    const waiting = data.waiting || [];
+    if (!session) {
+      lead.textContent = "";
+      row.hidden = true;
+      startForm.hidden = true;
+    } else if (session.status === "lobby") {
+      lead.textContent = fill(lobbyCopy, { n: data.player_count || 0, k: data.ready_count || 0 });
+      row.hidden = waiting.length === 0;
+      row.replaceChildren();
+      waiting.forEach((w) => {
+        const box = document.createElement("div");
+        box.className = "ch-wait-p" + (w.ready ? "" : " is-off");
+        if (w.avatar_url) {
+          const img = document.createElement("img");
+          img.src = w.avatar_url;
+          img.alt = "";
+          box.append(img);
+        }
+        const name = document.createElement("span");
+        name.textContent = w.nickname;
+        box.append(name);
+        row.append(box);
+      });
+      startForm.hidden = !data.can_start;
+    } else {
+      lead.textContent = liveCopy;
+      row.hidden = true;
+      startForm.hidden = true;
+    }
+    setTimeout(tick, 1000);
+  }
+  tick();
+</script>
+{% endblock %}
+{% block credit %}{% endblock %}

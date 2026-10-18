@@ -1,0 +1,57 @@
+duration_seconds: 600
+time_bonus_every: 20
+max_players: 4
+judge_threshold: 0.6
+adventure:
+  pick:
+    hard: 2
+    easy: 2
+demo:
+  max_players: 1
+  tasks:
+    - id: couple
+      type: couple
+      points: 10
+      prompt:
+        zh: 請拍攝一張新郎與新娘的照片，並上傳
+        en: Take a photo of the bride and groom, then upload it
+hard:
+  - id: find_person
+    type: person
+    points: 15
+    prompt:
+      zh: 找到畫面中的人請求合照，請先徵得同意
+      en: Find the person in this photo and take a group picture. Ask first.
+  - id: wear_red
+    type: color
+    color: red
+    points: 10
+    prompt:
+      zh: 與穿著紅色衣服的賓客合照
+      en: Take a photo with a guest wearing red
+  - id: wear_white
+    type: color
+    color: white
+    points: 10
+    prompt:
+      zh: 與穿著白色衣服的賓客合照
+      en: Take a photo with a guest wearing white
+easy:
+  - id: pushups
+    type: host
+    points: 5
+    prompt:
+      zh: 完成伏地挺身，找主持人驗收
+      en: Do push-ups, then find the host to check
+  - id: situps
+    type: host
+    points: 5
+    prompt:
+      zh: 完成仰臥起坐，找主持人驗收
+      en: Do sit-ups, then find the host to check
+  - id: lap
+    type: host
+    points: 5
+    prompt:
+      zh: 繞場一圈，找主持人驗收
+      en: Walk a lap of the venue, then find the host to check

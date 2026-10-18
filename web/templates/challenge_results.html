@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% block title %}{{ msg.challenge_results.format(name=project.name) }}{% endblock %}
+{% block extra_head %}
+<style>
+  html, body { height: 100%; overflow: hidden; }
+  .rs-stage > .glass-card {
+    overflow: auto;
+    display: grid;
+    place-items: center;
+    padding: 24px;
+  }
+  .bars {
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+    gap: 24px;
+    height: 46vh;
+    width: min(720px, 100%);
+  }
+  .col {
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr) auto;
+    justify-items: center;
+    height: 100%;
+    width: 72px;
+  }
+  .ava {
+    width: 56px;
+    height: 56px;
+    border-radius: 50%;
+    border: 3px solid #fff;
+    object-fit: cover;
+    background: #ddd4c6;
+  }
+  .bar-wrap {
+    width: 36px;
+    height: 100%;
+    display: flex;
+    align-items: flex-end;
+  }
+  .bar {
+    width: 100%;
+    height: 0;
+    background: #d4af37;
+    border-radius: 8px 8px 0 0;
+    transition: height 1.6s ease-out;
+  }
+  .col.is-on .bar { height: var(--h); }
+  .label { font-size: 13px; text-align: center; margin-top: 6px; }
+</style>
+{% endblock %}
+{% block body %}
+<a class="back-btn" href="{{ url_for('project_home', slug=project.slug) }}">{{ msg.lottery_back }}</a>
+<div class="glass-stage rs-stage">
+  <div class="glass-card">
+    <div class="glass-body">
+      <h1>{{ msg.challenge_settle }}</h1>
+      <div class="bars" id="bars"></div>
+    </div>
+  </div>
+  {% include "_credit.html" %}
+</div>
+<script>
+  const players = {{ payload.players | tojson }};
+  const max = Math.max(1, ...players.map((p) => p.score || 0));
+  const bars = document.getElementById("bars");
+  players.forEach((p) => {
+    const col = document.createElement("div");
+    col.className = "col";
+    const img = document.createElement("img");
+    img.className = "ava";
+    img.alt = p.nickname;
+    if (p.avatar_url) img.src = p.avatar_url;
+    const wrap = document.createElement("div");
+    wrap.className = "bar-wrap";
+    const bar = document.createElement("div");
+    bar.className = "bar";
+    bar.style.setProperty("--h", Math.round(((p.score || 0) / max) * 100) + "%");
+    wrap.append(bar);
+    const label = document.createElement("div");
+    label.className = "label";
+    label.textContent = p.nickname + " " + p.score;
+    col.append(img, wrap, label);
+    bars.append(col);
+    requestAnimationFrame(() => requestAnimationFrame(() => col.classList.add("is-on")));
+  });
+</script>
+{% endblock %}
+{% block credit %}{% endblock %}

@@ -1,0 +1,267 @@
+{% extends "base.html" %}
+{% block title %}{{ msg.challenge_title.format(name=project.name) }}{% endblock %}
+{% block extra_head %}
+<style>
+  html, body { height: 100%; overflow: hidden; background: var(--bg); }
+  .god-stage {
+    position: fixed;
+    inset: 0;
+    z-index: 1;
+    padding: 64px 12px 12px;
+    box-sizing: border-box;
+  }
+  .god-grid {
+    display: grid;
+    grid-template: 1fr 1fr / 1fr 1fr;
+    gap: 8px;
+    height: 100%;
+    min-height: 0;
+  }
+  .pane {
+    min-height: 0;
+    overflow: auto;
+    border: 1px solid var(--frost-line);
+    border-radius: 28px;
+    background: var(--frost-solid);
+    padding: 12px;
+    display: grid;
+    grid-template-rows: auto auto minmax(0, 1fr);
+    gap: 8px;
+  }
+  .pane.is-empty {
+    filter: grayscale(1);
+    opacity: 0.55;
+  }
+  .pane-head {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+  }
+  .pane-ava {
+    width: 56px;
+    height: 56px;
+    border-radius: 50%;
+    border: 3px solid #fff;
+    object-fit: cover;
+    background: #ddd4c6;
+  }
+  .pane-score { font-weight: 700; font-size: 18px; }
+  .pane-name { font-size: 14px; color: var(--muted); }
+  .pane-tasks { list-style: none; margin: 0; padding: 0; overflow: auto; }
+  .pane-tasks li {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 6px;
+    align-items: center;
+    font-size: 13px;
+    margin: 0 0 6px;
+  }
+  .pane-tasks button { font-size: 12px; padding: 4px 8px; }
+  .settle {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    z-index: 6;
+  }
+  .preview {
+    position: fixed;
+    inset: 0;
+    z-index: 40;
+    background: rgba(28, 25, 21, 0.82);
+    display: grid;
+    place-items: center;
+  }
+  .preview img {
+    max-width: 90%;
+    max-height: 90%;
+    object-fit: contain;
+    border-radius: 22px;
+  }
+  .preview[hidden] { display: none !important; }
+  .god-bar {
+    position: absolute;
+    top: 14px;
+    left: 50%;
+    transform: translateX(-50%);
+    font-weight: 700;
+    z-index: 4;
+  }
+</style>
+{% endblock %}
+{% block body %}
+<a class="back-btn" href="{{ url_for('project_home', slug=project.slug) }}">{{ msg.lottery_back }}</a>
+<p class="god-bar" id="clock"></p>
+<div class="god-stage">
+  <div class="god-grid">
+    <article class="pane is-empty" data-slot="0"></article>
+    <article class="pane is-empty" data-slot="1"></article>
+    <article class="pane is-empty" data-slot="2"></article>
+    <article class="pane is-empty" data-slot="3"></article>
+  </div>
+  <button class="btn lottery settle" type="button" id="start" hidden>{{ msg.challenge_start }}</button>
+  <button class="btn lottery settle" type="button" id="settle" hidden>{{ msg.challenge_settle }}</button>
+</div>
+<div class="preview" id="preview" hidden><img alt=""></div>
+<script>
+  const godUrl = {{ url_for('challenge_god_api', slug=project.slug) | tojson }};
+  const reviewUrl = {{ url_for('challenge_review', slug=project.slug) | tojson }};
+  const settleUrl = {{ url_for('challenge_settle', slug=project.slug) | tojson }};
+  const startUrl = {{ url_for('challenge_start', slug=project.slug) | tojson }};
+  const copy = {
+    empty: {{ msg.challenge_empty_slot | tojson }},
+    passed: {{ msg.challenge_passed | tojson }},
+    failed: {{ msg.challenge_failed | tojson }},
+    pending: {{ msg.challenge_pending | tojson }},
+    judging: {{ msg.challenge_judging | tojson }},
+    awaiting: {{ msg.challenge_awaiting | tojson }},
+    pass: {{ msg.challenge_pass | tojson }},
+    reject: {{ msg.challenge_reject | tojson }},
+    remain: {{ msg.challenge_remain | tojson }},
+    preview: {{ msg.challenge_preview | tojson }},
+    start: {{ msg.challenge_start | tojson }},
+    lobby: {{ msg.challenge_lobby | tojson }},
+    readyYes: {{ msg.challenge_ready_yes | tojson }},
+    readyNo: {{ msg.challenge_ready_no | tojson }},
+  };
+  const canOverride = {{ can_override | tojson }};
+  const clock = document.getElementById("clock");
+  const startBtn = document.getElementById("start");
+  const settleBtn = document.getElementById("settle");
+  const preview = document.getElementById("preview");
+  const previewImg = preview.querySelector("img");
+  const panes = [...document.querySelectorAll(".pane")];
+
+  function fill(s, vals) {
+    return Object.entries(vals).reduce((t, [k, v]) => t.replaceAll("{" + k + "}", String(v)), s);
+  }
+  function stLabel(st) {
+    if (st === "passed") return copy.passed;
+    if (st === "failed") return copy.failed;
+    if (st === "judging") return copy.judging;
+    if (st === "awaiting_host") return copy.awaiting;
+    return copy.pending;
+  }
+  async function review(deviceId, idx, passed) {
+    const res = await fetch(reviewUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Requested-With": "XMLHttpRequest" },
+      body: JSON.stringify({ device_id: deviceId, idx, passed: passed ? 1 : 0 }),
+    });
+    const data = await res.json();
+    if (data.error) alert(data.error);
+  }
+  function paintPane(el, slot, lobby) {
+    const key = JSON.stringify(slot);
+    if (el.dataset.key === key) return;
+    el.dataset.key = key;
+    el.replaceChildren();
+    if (!slot) {
+      el.classList.add("is-empty");
+      const p = document.createElement("p");
+      p.className = "pane-name";
+      p.textContent = copy.empty;
+      el.append(p);
+      return;
+    }
+    el.classList.remove("is-empty");
+    const head = document.createElement("div");
+    head.className = "pane-head";
+    const meta = document.createElement("div");
+    const score = document.createElement("div");
+    score.className = "pane-score";
+    score.textContent = lobby ? (slot.ready ? copy.readyYes : copy.readyNo) : String(slot.score);
+    const name = document.createElement("div");
+    name.className = "pane-name";
+    name.textContent = slot.nickname;
+    meta.append(score, name);
+    if (slot.avatar_url) {
+      const img = document.createElement("img");
+      img.className = "pane-ava";
+      img.alt = "";
+      img.src = slot.avatar_url;
+      head.append(img);
+    }
+    head.append(meta);
+    const list = document.createElement("ul");
+    list.className = "pane-tasks";
+    if (lobby) {
+      el.append(head, list);
+      return;
+    }
+    (slot.tasks || []).forEach((t) => {
+      const li = document.createElement("li");
+      const label = document.createElement("span");
+      label.textContent = t.prompt + " · " + stLabel(t.status);
+      if (t.status === "passed" && t.photo_url) {
+        label.style.cursor = "pointer";
+        label.addEventListener("click", () => {
+          previewImg.src = t.photo_url;
+          preview.hidden = false;
+        });
+      }
+      const actions = document.createElement("span");
+      const needHost = t.kind === "host" && t.status === "awaiting_host";
+      const needOver = canOverride && t.kind !== "host";
+      if (needHost || needOver) {
+        const ok = document.createElement("button");
+        ok.className = "btn small";
+        ok.type = "button";
+        ok.textContent = copy.pass;
+        ok.addEventListener("click", () => review(slot.device_id, t.idx, true));
+        const no = document.createElement("button");
+        no.className = "btn small secondary";
+        no.type = "button";
+        no.textContent = copy.reject;
+        no.addEventListener("click", () => review(slot.device_id, t.idx, false));
+        actions.append(ok, no);
+      }
+      li.append(label, actions);
+      list.append(li);
+    });
+    el.append(head, list);
+  }
+
+  async function tick() {
+    let data;
+    try {
+      data = await (await fetch(godUrl, { cache: "no-store" })).json();
+    } catch (err) {
+      setTimeout(tick, 1000);
+      return;
+    }
+    const session = data.session;
+    if (session && session.status === "running") {
+      const r = session.remain || 0;
+      const m = String(Math.floor(r / 60)).padStart(2, "0");
+      const s = String(r % 60).padStart(2, "0");
+      clock.textContent = fill(copy.remain, { m, s });
+    } else if (session && session.status === "lobby") {
+      clock.textContent = fill(copy.lobby, { n: data.player_count || 0, k: data.ready_count || 0 });
+    } else clock.textContent = "";
+    const lobby = !!(session && session.status === "lobby");
+    panes.forEach((el) => {
+      const n = Number(el.dataset.slot);
+      paintPane(el, (data.slots || [])[n], lobby);
+    });
+    startBtn.hidden = !(data.can_start && canOverride);
+    settleBtn.hidden = !data.can_settle;
+    setTimeout(tick, 1000);
+  }
+  tick();
+  startBtn.addEventListener("click", async () => {
+    const res = await fetch(startUrl, { method: "POST", headers: { "X-Requested-With": "XMLHttpRequest" } });
+    const data = await res.json();
+    if (data.error) alert(data.error);
+  });
+  settleBtn.addEventListener("click", async () => {
+    const res = await fetch(settleUrl, { method: "POST", headers: { "X-Requested-With": "XMLHttpRequest" } });
+    const data = await res.json();
+    if (data.error) { alert(data.error); return; }
+    if (data.url) location.href = data.url;
+  });
+  preview.addEventListener("click", () => { preview.hidden = true; previewImg.src = ""; });
+</script>
+{% endblock %}
+{% block credit %}{% endblock %}

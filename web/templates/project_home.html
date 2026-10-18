@@ -32,6 +32,9 @@
         {% if can_lottery %}
           <a class="btn lottery" href="{{ url_for('lottery', slug=project.slug) }}">{{ msg.lottery }}</a>
         {% endif %}
+        {% if can_edit %}
+          <a class="btn lottery" href="{{ url_for('challenge_landing', slug=project.slug) }}">{{ msg.challenge }}</a>
+        {% endif %}
       </div>
     </div>
     {% include "_credit.html" %}

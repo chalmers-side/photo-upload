@@ -269,6 +269,13 @@
             <button class="btn secondary delete-project js-delete-cancel" type="button">{{ msg.delete_cancel }}</button>
           </form>
         </div>
+        <div class="delete-arm">
+          <button type="button" class="btn secondary delete-project js-delete-arm">{{ msg.challenge_wipe }}</button>
+          <form class="delete-confirm" hidden method="post" action="{{ url_for('admin_wipe_challenge', project_id=p.id) }}" onsubmit="sessionStorage.setItem('adminOpenProject', '{{ p.id }}')">
+            <button class="btn secondary delete-project" type="submit">{{ msg.delete_confirm }}</button>
+            <button class="btn secondary delete-project js-delete-cancel" type="button">{{ msg.delete_cancel }}</button>
+          </form>
+        </div>
         {% if p.can_delete %}
         <div class="delete-arm">
           <button type="button" class="btn danger delete-project js-delete-arm">{{ msg.delete_project }}</button>

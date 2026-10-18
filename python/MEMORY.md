@@ -11,3 +11,4 @@
 - App talks to Postgres with `psycopg[binary,pool]`. Detector needs the same (it writes `set_person`).
 - Admin QR codes use the `qrcode` package (Pillow already draws the PNG).
 - Detector-only deps live in `[dependency-groups] detector` (`onnxruntime`, `numpy`); the app target does not install them. onnxruntime ships `manylinux_2_28_aarch64` wheels, fine on bookworm.
+- App loads `config/challenge-setting.yaml` with PyYAML. The judge image uses the detector group plus default deps (PyYAML + psycopg) because it imports `challenge_store`.

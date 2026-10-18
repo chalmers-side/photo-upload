@@ -96,10 +96,14 @@ def pg():
             kwargs={"row_factory": dict_row},
         )
         with _pg.connection() as conn:
-            for stmt in _SCHEMA.split(";"):
-                stmt = stmt.strip()
-                if stmt:
-                    conn.execute(stmt)
+            conn.execute("SELECT pg_advisory_lock(872634)")
+            try:
+                for stmt in _SCHEMA.split(";"):
+                    stmt = stmt.strip()
+                    if stmt:
+                        conn.execute(stmt)
+            finally:
+                conn.execute("SELECT pg_advisory_unlock(872634)")
     return _pg
 
 
@@ -788,16 +792,16 @@ def requeue_pending():
         enqueue_detect(row["project_id"], row["id"], row["device_id"])
 
 
-def add_photo(project_id, photo_id, caption, device_id, rebuild=True):
+def add_photo(project_id, photo_id, caption, device_id, rebuild=True, consent=None):
     """Save the photo record; chances are granted later by the detector."""
     now = time.time()
     with pg().connection() as conn:
         conn.execute(
             """
-            INSERT INTO photos (project_id, id, caption, device_id, ts, person)
-            VALUES (%s, %s, %s, %s, %s, NULL)
+            INSERT INTO photos (project_id, id, caption, device_id, ts, person, consent)
+            VALUES (%s, %s, %s, %s, %s, NULL, %s)
             """,
-            (project_id, photo_id, caption or "", device_id, now),
+            (project_id, photo_id, caption or "", device_id, now, consent),
         )
         conn.execute(
             """

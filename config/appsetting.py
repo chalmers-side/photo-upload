@@ -54,6 +54,9 @@ detector_threads = int(os.environ.get("DETECTOR_THREADS", "2"))
 person_score = float(os.environ.get("PERSON_SCORE", "0.45"))
 # Min person box area as a fraction of the photo (skips tiny people far in the background)
 person_min_area = float(os.environ.get("PERSON_MIN_AREA", "0.005"))
+# picture-judge worker (POC): InsightFace + CLIP ONNX
+judge_threads = int(os.environ.get("JUDGE_THREADS", "2"))
+judge_model_dir = os.environ.get("JUDGE_MODEL_DIR", "/app/models")
 
 
 def _unit(name, default):

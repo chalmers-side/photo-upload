@@ -1,0 +1,204 @@
+{% extends "base.html" %}
+{% block title %}{{ msg.challenge_title.format(name=project.name) }}{% endblock %}
+{% block extra_head %}
+<style>
+  html, body { height: 100%; overflow: hidden; }
+  .ch-stage > .glass-card {
+    overflow: auto;
+    display: grid;
+    place-items: start center;
+    padding: 24px;
+  }
+  .glass-body { width: min(720px, 100%); text-align: left; }
+  .ch-timer { font-size: 28px; font-weight: 700; margin: 0 0 8px; }
+  .ch-src, .ch-shot {
+    width: min(240px, 100%);
+    height: auto;
+    border-radius: 22px;
+    display: block;
+    margin: 8px 0;
+  }
+  .ch-tasks { list-style: none; padding: 0; margin: 16px 0 0; }
+  .ch-tasks li { margin: 0 0 8px; font-size: 14px; color: var(--muted); }
+  .ch-tasks .is-now { color: var(--ink); font-weight: 700; }
+  .ch-hidden { display: none !important; }
+  #finish-btn { margin-top: 20px; width: 100%; }
+</style>
+{% endblock %}
+{% block body %}
+<a class="back-btn" href="{{ url_for('project_home', slug=project.slug) }}">{{ msg.lottery_back }}</a>
+<div class="glass-stage ch-stage">
+  <div class="glass-card">
+    <div class="glass-body">
+      <h1>{{ msg.challenge }}</h1>
+      {% for category, message in get_flashed_messages(with_categories=true) %}
+        <p class="flash {{ category }}">{{ message }}</p>
+      {% endfor %}
+      <div id="lobby-ui">
+        <p id="lobby-status"></p>
+        <button class="btn lottery ch-hidden" type="button" id="ready-btn">{{ msg.challenge_ready }}</button>
+      </div>
+      <div id="play-ui" class="ch-hidden">
+        <p class="ch-timer" id="timer"></p>
+        <p id="status"></p>
+        <p id="score"></p>
+        <p id="prompt"></p>
+        <img class="ch-src ch-hidden" id="source" alt="">
+        <form class="stack ch-hidden" id="up-form" method="post" action="{{ url_for('challenge_upload', slug=project.slug) }}" enctype="multipart/form-data">
+          <label>{{ msg.challenge_upload }}</label>
+          <input type="file" name="photo" accept="image/*">
+          <button class="btn" type="submit">{{ msg.challenge_upload }}</button>
+        </form>
+        <button class="btn lottery ch-hidden" type="button" id="host-btn">{{ msg.challenge_host_btn }}</button>
+        <ul class="ch-tasks" id="tasks"></ul>
+        <button class="btn lottery ch-hidden" type="button" id="finish-btn">{{ msg.challenge_finish }}</button>
+      </div>
+    </div>
+  </div>
+  {% include "_credit.html" %}
+</div>
+{% include "_progress_veil.html" %}
+<script src="{{ url_for('static', filename='upload_progress.js') }}"></script>
+<script>
+  const meUrl = {{ url_for('challenge_me', slug=project.slug) | tojson }};
+  const hostUrl = {{ url_for('challenge_host_request', slug=project.slug) | tojson }};
+  const finishUrl = {{ url_for('challenge_finish', slug=project.slug) | tojson }};
+  const readyUrl = {{ url_for('challenge_ready', slug=project.slug) | tojson }};
+  const copy = {
+    wait: {{ msg.challenge_wait | tojson }},
+    waitHost: {{ msg.challenge_wait_host | tojson }},
+    closed: {{ msg.challenge_closed | tojson }},
+    remain: {{ msg.challenge_remain | tojson }},
+    score: {{ msg.challenge_score | tojson }},
+    judging: {{ msg.challenge_judging | tojson }},
+    passed: {{ msg.challenge_passed | tojson }},
+    failed: {{ msg.challenge_failed | tojson }},
+    pending: {{ msg.challenge_pending | tojson }},
+    awaiting: {{ msg.challenge_awaiting | tojson }},
+    failedNet: {{ msg.upload_failed | tojson }},
+  };
+  const pieOpts = {
+    uploading: {{ msg.upload_progress | tojson }},
+    processing: {{ msg.upload_processing | tojson }},
+    failed: {{ msg.upload_failed | tojson }},
+    maxEdge: {{ cfg.jpeg_max_edge }},
+  };
+  const lobbyUi = document.getElementById("lobby-ui");
+  const playUi = document.getElementById("play-ui");
+  const lobbyStatus = document.getElementById("lobby-status");
+  const readyBtn = document.getElementById("ready-btn");
+  const timerEl = document.getElementById("timer");
+  const statusEl = document.getElementById("status");
+  const scoreEl = document.getElementById("score");
+  const promptEl = document.getElementById("prompt");
+  const sourceEl = document.getElementById("source");
+  const form = document.getElementById("up-form");
+  const hostBtn = document.getElementById("host-btn");
+  const finishBtn = document.getElementById("finish-btn");
+  const tasksEl = document.getElementById("tasks");
+
+  function fill(s, vals) {
+    return Object.entries(vals).reduce((t, [k, v]) => t.replaceAll("{" + k + "}", String(v)), s);
+  }
+  function statusLabel(st) {
+    if (st === "passed") return copy.passed;
+    if (st === "failed") return copy.failed;
+    if (st === "judging") return copy.judging;
+    if (st === "awaiting_host") return copy.awaiting;
+    return copy.pending;
+  }
+  function show(el, on) { el.classList.toggle("ch-hidden", !on); }
+
+  async function tick() {
+    let data;
+    try {
+      data = await (await fetch(meUrl, { cache: "no-store" })).json();
+    } catch (err) {
+      setTimeout(tick, 1000);
+      return;
+    }
+    const session = data.session;
+    const player = data.player;
+    const cur = data.current;
+    if (!session) {
+      show(lobbyUi, true);
+      show(playUi, false);
+      lobbyStatus.textContent = copy.closed;
+      show(readyBtn, false);
+      setTimeout(tick, 1000);
+      return;
+    }
+    if (session.status === "lobby") {
+      show(lobbyUi, true);
+      show(playUi, false);
+      const ready = !!(player && player.ready);
+      lobbyStatus.textContent = ready ? copy.waitHost : copy.wait;
+      show(readyBtn, !!(player && !ready));
+      setTimeout(tick, 1000);
+      return;
+    }
+    show(lobbyUi, false);
+    show(playUi, true);
+    show(readyBtn, false);
+    const r = session.remain || 0;
+    const m = String(Math.floor(r / 60)).padStart(2, "0");
+    const s = String(r % 60).padStart(2, "0");
+    timerEl.textContent = fill(copy.remain, { m, s });
+    statusEl.textContent = "";
+    if (player) scoreEl.textContent = fill(copy.score, { n: player.score });
+    else scoreEl.textContent = "";
+    if (cur) {
+      promptEl.textContent = cur.prompt;
+      if (cur.source_url) {
+        sourceEl.src = cur.source_url;
+        show(sourceEl, true);
+      } else show(sourceEl, false);
+      const photo = cur.kind === "person" || cur.kind === "color" || cur.kind === "couple";
+      show(form, photo && cur.status !== "judging" && session.status === "running" && player && !player.finished);
+      show(hostBtn, cur.kind === "host" && cur.status !== "awaiting_host" && session.status === "running" && player && !player.finished);
+    } else {
+      promptEl.textContent = "";
+      show(sourceEl, false);
+      show(form, false);
+      show(hostBtn, false);
+    }
+    show(finishBtn, session.status === "running" && !!(player && player.can_finish));
+    tasksEl.replaceChildren();
+    (data.tasks || []).forEach((t) => {
+      const li = document.createElement("li");
+      if (cur && t.idx === cur.idx) li.className = "is-now";
+      li.textContent = t.prompt + " · " + statusLabel(t.status);
+      tasksEl.append(li);
+    });
+    setTimeout(tick, 1000);
+  }
+  tick();
+
+  form.addEventListener("submit", (e) => {
+    e.preventDefault();
+    postFormWithPie(form, pieOpts);
+  });
+  readyBtn.addEventListener("click", async () => {
+    try {
+      const res = await fetch(readyUrl, { method: "POST", headers: { "X-Requested-With": "XMLHttpRequest" } });
+      const data = await res.json();
+      if (data.error) alert(data.error);
+    } catch (err) { alert(copy.failedNet); }
+  });
+  hostBtn.addEventListener("click", async () => {
+    try {
+      const res = await fetch(hostUrl, { method: "POST", headers: { "X-Requested-With": "XMLHttpRequest" } });
+      const data = await res.json();
+      if (data.error) alert(data.error);
+    } catch (err) { alert(copy.failedNet); }
+  });
+  finishBtn.addEventListener("click", async () => {
+    try {
+      const res = await fetch(finishUrl, { method: "POST", headers: { "X-Requested-With": "XMLHttpRequest" } });
+      const data = await res.json();
+      if (data.error) alert(data.error);
+    } catch (err) { alert(copy.failedNet); }
+  });
+</script>
+{% endblock %}
+{% block credit %}{% endblock %}
