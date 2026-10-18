@@ -26,7 +26,7 @@ docker compose up -d
 
 Open `http://localhost:8000`. The home page lists projects. Admin is `/admin` (root / `ADMIN_PASSWORD` on first boot).
 
-Pushes to `main` or `feature/**` build `linux/arm64` on the self-hosted Mac runner (native, no QEMU), then `compose pull && compose up -d` with `:latest`. Compose only recreates a service when that image digest changed (Redis stays; nginx/detector stay on template-only app deploys). nginx still restarts when app gets a new IP so it does not 502. SHA tags are still pushed for rollback (`IMAGE_TAG=<sha> compose up -d`).
+Pushes to `main` or `feature/**` build `linux/arm64` on the self-hosted Mac runner (native, no QEMU), then `compose pull && compose up -d` with `:latest`. Compose only recreates a service when that image digest changed (Redis stays; nginx/detector stay on template-only app deploys). nginx still restarts when app gets a new IP so it does not 502. SHA tags are still pushed for rollback (`IMAGE_TAG=sha-<commit> compose up -d`).
 
 ### Local POC (no push, no GHCR)
 
