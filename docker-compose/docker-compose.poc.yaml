@@ -16,6 +16,9 @@ services:
       LOG_DIR: /logs
       REDIS_URL: redis://redis:6379/0
       DATABASE_URL: postgresql://photo:photo@postgres:5432/photo
+      SECRET_KEY: poc-dev-key
+      ADMIN_USERNAME: root
+      ADMIN_PASSWORD: poc
     command:
       - sh
       - -c

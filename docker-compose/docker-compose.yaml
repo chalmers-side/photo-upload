@@ -4,6 +4,8 @@ services:
   app:
     image: ghcr.io/chalmers-side/photo-upload:${IMAGE_TAG:-latest}
     restart: unless-stopped
+    env_file:
+      - secret.env
     environment:
       PHOTO_DIR: /data/photos
       LOG_DIR: /logs

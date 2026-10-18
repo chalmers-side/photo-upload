@@ -223,3 +223,7 @@ __marimo__/
 
 # Local POC stack data (docker-compose/poc.sh)
 .poc/
+
+# Machine secrets (live copy lives on the photo disk)
+secret.env
+**/secret.env

@@ -4,8 +4,8 @@ import os
 bind = os.environ.get("BIND", "0.0.0.0")
 # gunicorn port inside the container (nginx exposes 8000)
 port = int(os.environ.get("PORT", "8000"))
-# Flask session cookie signing key
-secret_key = os.environ.get("SECRET_KEY", "photo-upload-homelab-secret")
+# Flask session cookie signing key (set in docker-compose/secret.env)
+secret_key = os.environ.get("SECRET_KEY") or ""
 
 # Photo and project-asset directory (use /data/photos in the container)
 photo_dir = os.environ.get(

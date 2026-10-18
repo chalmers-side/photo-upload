@@ -503,7 +503,8 @@ def delete_project(project_id, delete_files):
 
 def ensure_root():
     name = (admin_config.username or "").strip()
-    if not name:
+    password = admin_config.password or ""
+    if not name or not password:
         return
     with pg().connection() as conn:
         conn.execute(
@@ -512,7 +513,7 @@ def ensure_root():
             VALUES (%s, %s, TRUE, 'zh', %s)
             ON CONFLICT (name) DO NOTHING
             """,
-            (name, generate_password_hash(admin_config.password), time.time()),
+            (name, generate_password_hash(password), time.time()),
         )
 
 

@@ -45,8 +45,8 @@ Separate Compose project (`photo-upload-poc`): Postgres in `.poc/postgres`, phot
 | --- | --- | --- |
 | Photo directory | Compose `HOST_PHOTO_DIR` (or `.env`) | Default `/Volumes/OWC Envoy Pro FX/photo-upload`. Bind the same path on **app** and **nginx**. |
 | App logs | `$HOST_PHOTO_DIR/logs` | One file per project per day. Deploy also symlinks `/opt/app/photo-upload/logs`. Older than 30 days are deleted. |
-| Admin login | `ADMIN_USERNAME` / `ADMIN_PASSWORD` on `app` | Seeds the root account in Postgres on first boot (`config/admin.py`). Later password changes live in Postgres. |
-| `SECRET_KEY` | `app` environment | Default in `config/appsetting.py`. Signs cookies. |
+| Admin login | `docker-compose/secret.env` on the Mac | `ADMIN_USERNAME` / `ADMIN_PASSWORD`. Seeds root in Postgres on first boot only. Gitignored; rsync will not delete it. |
+| `SECRET_KEY` | `docker-compose/secret.env` on the Mac | Signs cookies. Copy `secret.env.example`. Not in git. |
 
 **Site-wide defaults** (Compose `app.environment`, or `config/appsetting.py`). New projects copy the slideshow/lottery values; each project can override them in Admin → Settings.
 

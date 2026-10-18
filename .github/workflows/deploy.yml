@@ -102,6 +102,8 @@ jobs:
             --exclude '.github/' \
             --exclude '.cursor/' \
             --exclude 'logs/' \
+            --exclude 'secret.env' \
+            --exclude 'docker-compose/secret.env' \
             "${GITHUB_WORKSPACE}/" "$dest/"
 
       - name: Auth GHCR
@@ -132,6 +134,10 @@ jobs:
           fi
           photo="${HOST_PHOTO_DIR:-/Volumes/OWC Envoy Pro FX/photo-upload}"
           mkdir -p "$photo/logs" "$photo/postgres"
+          if [[ ! -f secret.env ]]; then
+            echo "missing docker-compose/secret.env (not in git; copy secret.env.example)" >&2
+            exit 1
+          fi
           rm -rf /opt/app/photo-upload/logs
           ln -s "$photo/logs" /opt/app/photo-upload/logs
           compose pull
