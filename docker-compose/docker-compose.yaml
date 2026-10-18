@@ -1,3 +1,5 @@
+name: photo-upload
+
 services:
   app:
     image: ghcr.io/chalmers-chang/photo-upload:${IMAGE_TAG:-latest}
