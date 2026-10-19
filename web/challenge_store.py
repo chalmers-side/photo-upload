@@ -1,11 +1,14 @@
 """Grand-challenge sessions, players, tasks, and judge queue."""
 import json
 import random
+import re
 import shutil
 import time
 import uuid
 from datetime import datetime
 from zoneinfo import ZoneInfo
+
+from psycopg.errors import UniqueViolation
 
 from config import challenge as challenge_cfg
 from config import msg
@@ -17,6 +20,9 @@ TAIPEI = ZoneInfo("Asia/Taipei")
 LIVE = ("lobby", "running")
 KINDS = ("demo", "adventure")
 PHOTO_KINDS = ("person", "color", "couple")
+NAME_MAX = 12
+LIVE_ROOM_MAX = 5
+PIN_RE = re.compile(r"^\d{4}$")
 
 
 def cfg():
@@ -40,6 +46,10 @@ def submission_path(project_id, session_id, photo_id):
 
 def submission_url(project_id, session_id, photo_id):
     return f"/photos/{project_id}/challenge/{session_id}/{photo_id}.jpg"
+
+
+def avatar_path(project_id, session_id, device_id):
+    return store.photo_dir(project_id) / "challenge" / session_id / f"ava-{device_id}.jpg"
 
 
 def enqueue_judge(project_id, session_id, device_id, idx, photo_id):
@@ -92,35 +102,7 @@ def avatar_url(project_id, device_id):
     )
     if row:
         return store.photo_url(project_id, row["id"])
-    row = store._one(
-        """
-        SELECT t.session_id, t.photo_id
-        FROM challenge_tasks t
-        JOIN challenge_sessions s
-          ON s.project_id = t.project_id AND s.id = t.session_id
-        WHERE t.project_id = %s AND t.device_id = %s
-          AND t.photo_id IS NOT NULL AND s.created_at >= %s
-        ORDER BY s.created_at, t.idx
-        LIMIT 1
-        """,
-        (project_id, device_id, start),
-    )
-    if row:
-        return submission_url(project_id, row["session_id"], row["photo_id"])
     return ""
-
-
-def live_session(project_id, conn=None):
-    return store._one(
-        """
-        SELECT * FROM challenge_sessions
-        WHERE project_id = %s AND status IN ('lobby', 'running')
-        ORDER BY created_at DESC
-        LIMIT 1
-        """,
-        (project_id,),
-        conn=conn,
-    )
 
 
 def get_session(project_id, session_id, conn=None):
@@ -132,6 +114,73 @@ def get_session(project_id, session_id, conn=None):
         (project_id, session_id),
         conn=conn,
     )
+
+
+def list_live_sessions(project_id, conn=None):
+    return store._all(
+        """
+        SELECT * FROM challenge_sessions
+        WHERE project_id = %s AND status IN ('lobby', 'running')
+        ORDER BY created_at DESC
+        """,
+        (project_id,),
+        conn=conn,
+    )
+
+
+def player_live(project_id, device_id, conn=None):
+    return store._one(
+        """
+        SELECT s.*
+        FROM challenge_sessions s
+        JOIN challenge_players p
+          ON p.project_id = s.project_id AND p.session_id = s.id
+        WHERE s.project_id = %s AND p.device_id = %s
+          AND s.status IN ('lobby', 'running')
+        ORDER BY s.created_at DESC
+        LIMIT 1
+        """,
+        (project_id, device_id),
+        conn=conn,
+    )
+
+
+def session_by_pin(project_id, pin, conn=None):
+    return store._one(
+        """
+        SELECT * FROM challenge_sessions
+        WHERE project_id = %s AND pin = %s AND status IN ('lobby', 'running')
+        """,
+        (project_id, pin),
+        conn=conn,
+    )
+
+
+def _lobby_counts(waiting):
+    n = len(waiting)
+    k = sum(1 for w in waiting if w["ready"])
+    return {
+        "player_count": n,
+        "ready_count": k,
+        "waiting_count": n - k,
+        "all_ready": bool(waiting) and k == n,
+    }
+
+
+def _room_counts(project_id, row):
+    waiting = waiting_of(project_id, row["id"])
+    item = dict(row)
+    item.update(_lobby_counts(waiting))
+    item["cap"] = player_cap(row["kind"])
+    item["can_delete"] = row["status"] != "running"
+    item["waiting"] = waiting
+    return item
+
+
+def list_rooms(project_id):
+    expire_running(project_id)
+    live = [_room_counts(project_id, row) for row in list_live_sessions(project_id)]
+    return live, list_history(project_id)
 
 
 def list_history(project_id):
@@ -149,7 +198,7 @@ def list_history(project_id):
         players = []
         for p in list_players(project_id, row["id"]):
             item = dict(p)
-            item["nickname"] = store.nickname_of(p["device_id"]) or msg.guest_name
+            item["nickname"] = _face(project_id, row["id"], p)["nickname"]
             item["score"] = p["task_score"] + p["time_score"]
             players.append(item)
         out.append({**dict(row), "players": players})
@@ -219,50 +268,167 @@ def person_pool(project_id, device_id, conn=None):
     )
 
 
-def _color_fallback(specs, used_ids):
-    colors = [s for s in specs if s.get("type") == "color" and s.get("id") not in used_ids]
-    if colors:
-        return dict(random.choice(colors))
-    return {
-        "id": "wear_red",
-        "type": "color",
-        "color": "red",
-        "points": 10,
-        "prompt": {
-            "zh": "與穿著紅色衣服的賓客合照",
-            "en": "Take a photo with a guest wearing red",
-        },
-    }
+def _used_sources(conn, project_id, session_id, except_idx=None, except_device=None):
+    rows = store._all(
+        """
+        SELECT device_id, idx, source_photo_id, status, pass_count
+        FROM challenge_tasks
+        WHERE project_id = %s AND session_id = %s AND source_photo_id IS NOT NULL
+        """,
+        (project_id, session_id),
+        conn=conn,
+    )
+    used = set()
+    for row in rows:
+        if (
+            except_device
+            and row["device_id"] == except_device
+            and except_idx is not None
+            and row["idx"] == except_idx
+        ):
+            continue
+        used.add(row["source_photo_id"])
+    return used
 
 
-def _pick_hard(project_id, device_id, n, conn):
-    specs = list(cfg().get("hard") or [])
-    if not specs:
+def _used_colors(conn, project_id, session_id, except_idx=None, except_device=None):
+    rows = store._all(
+        """
+        SELECT device_id, idx, color FROM challenge_tasks
+        WHERE project_id = %s AND session_id = %s
+          AND color IS NOT NULL AND color <> ''
+        """,
+        (project_id, session_id),
+        conn=conn,
+    )
+    used = set()
+    for row in rows:
+        if (
+            except_device
+            and row["device_id"] == except_device
+            and except_idx is not None
+            and row["idx"] == except_idx
+        ):
+            continue
+        used.add(row["color"])
+    return used
+
+
+def _pick_high(project_id, device_id, n, session_id, conn):
+    specs = list(cfg().get("high") or [])
+    if not specs or n <= 0:
         return []
-    n = min(n, len(specs))
-    chosen = [dict(s) for s in random.sample(specs, n)]
-    used = {s["id"] for s in chosen}
+    template = next((s for s in specs if s.get("type") == "person"), specs[0])
+    used = _used_sources(conn, project_id, session_id)
+    pool = [p for p in person_pool(project_id, device_id, conn=conn) if p["id"] not in used]
+    random.shuffle(pool)
     out = []
-    for spec in chosen:
-        if spec.get("type") == "person":
-            pool = person_pool(project_id, device_id, conn=conn)
-            if pool:
-                src = random.choice(pool)
-                spec["source_photo_id"] = src["id"]
-                out.append(spec)
-                continue
-            spec = _color_fallback(specs, used)
-            used.add(spec["id"])
+    for i in range(n):
+        spec = dict(template)
+        spec["id"] = f"{template.get('id') or 'find_person'}-{i}"
+        spec["band"] = "high"
+        spec["type"] = "person"
+        if pool:
+            src = pool.pop()
+            spec["source_photo_id"] = src["id"]
         out.append(spec)
     return out
 
 
-def _pick_easy(n):
-    specs = list(cfg().get("easy") or [])
+def _pick_mid(n, used_colors=None):
+    specs = [dict(s) for s in (cfg().get("mid") or []) if s.get("type") == "color"]
+    used = set(used_colors or ())
+    available = [s for s in specs if s.get("color") not in used]
+    random.shuffle(available)
+    n = min(n, len(available))
+    out = []
+    for spec in available[:n]:
+        spec["band"] = "mid"
+        out.append(spec)
+    return out
+
+
+def _pick_counts(kind):
+    data = cfg()
+    pick = (data.get(kind) or {}).get("pick") or (data.get("adventure") or {}).get("pick") or {}
+    return (
+        int(pick.get("high") or pick.get("hard") or 1),
+        int(pick.get("mid") or 1),
+        int(pick.get("low") or pick.get("easy") or 2),
+    )
+
+
+def _demo_couple_mid():
+    for spec in (cfg().get("demo") or {}).get("tasks") or []:
+        if spec.get("type") == "couple":
+            item = dict(spec)
+            item["band"] = "mid"
+            return item
+    return None
+
+
+def _pick_mids(kind, n, used_colors):
+    out = []
+    if kind == "demo":
+        couple = _demo_couple_mid()
+        if couple and n > 0:
+            out.append(couple)
+            n -= 1
+    if n > 0:
+        colors = _pick_mid(n, used_colors)
+        out.extend(colors)
+        used_colors.update(c.get("color") for c in colors if c.get("color"))
+    return out
+
+
+def _pick_low(n):
+    specs = list(cfg().get("low") or cfg().get("easy") or [])
     if not specs:
         return []
     n = min(n, len(specs))
-    return [dict(s) for s in random.sample(specs, n)]
+    out = []
+    for spec in random.sample(specs, n):
+        item = dict(spec)
+        item["band"] = "low"
+        out.append(item)
+    return out
+
+
+def _rotate_low(conn, project_id, session_id, device_id, idx):
+    specs = list(cfg().get("low") or cfg().get("easy") or [])
+    task = get_task(project_id, session_id, device_id, idx, conn=conn)
+    if not task or task.get("band") != "low" or not specs:
+        return
+    held = {
+        t["task_id"]
+        for t in list_tasks(project_id, session_id, device_id, conn=conn)
+        if t.get("band") == "low"
+    }
+    available = [s for s in specs if (s.get("id") or "") not in held]
+    if not available:
+        available = [s for s in specs if (s.get("id") or "") != task["task_id"]]
+    if not available:
+        return
+    spec = dict(random.choice(available))
+    zh, en = _prompt(spec)
+    conn.execute(
+        """
+        UPDATE challenge_tasks
+        SET task_id = %s, prompt_zh = %s, prompt_en = %s, points = %s,
+            status = 'pending', reviewed_by = NULL
+        WHERE project_id = %s AND session_id = %s AND device_id = %s AND idx = %s
+        """,
+        (
+            spec.get("id") or task["task_id"],
+            zh,
+            en,
+            int(spec.get("points") or task["points"]),
+            project_id,
+            session_id,
+            device_id,
+            idx,
+        ),
+    )
 
 
 def _insert_tasks(conn, project_id, session_id, device_id, specs):
@@ -271,12 +437,14 @@ def _insert_tasks(conn, project_id, session_id, device_id, specs):
         kind = spec.get("type")
         if kind not in ("person", "color", "host", "couple"):
             continue
+        band = spec.get("band") or ("solo" if kind == "couple" else "")
         conn.execute(
             """
             INSERT INTO challenge_tasks (
               project_id, session_id, device_id, idx, task_id, kind,
-              prompt_zh, prompt_en, points, source_photo_id, color, status
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'pending')
+              prompt_zh, prompt_en, points, source_photo_id, color, status,
+              pass_count, band
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'pending', 0, %s)
             """,
             (
                 project_id,
@@ -290,44 +458,75 @@ def _insert_tasks(conn, project_id, session_id, device_id, specs):
                 int(spec.get("points") or 0),
                 spec.get("source_photo_id"),
                 spec.get("color"),
+                band,
             ),
         )
 
 
-def open_lobby(project_id, kind):
+def normalize_name(name):
+    text = (name or "").strip()
+    if not text:
+        raise ValueError(msg.challenge_need_name)
+    return text[:NAME_MAX]
+
+
+def normalize_pin(pin):
+    text = (pin or "").strip()
+    if not PIN_RE.fullmatch(text):
+        raise ValueError(msg.challenge_bad_pin)
+    return text
+
+
+def create_room(project_id, name, pin, kind):
     if kind not in KINDS:
         raise ValueError(msg.challenge_bad_kind)
+    name = normalize_name(name)
+    pin = normalize_pin(pin)
     duration = int(cfg().get("duration_seconds") or 600)
     now = time.time()
+    sid = uuid.uuid4().hex
     with store.pg().connection() as conn:
         with conn.transaction():
-            live = live_session(project_id, conn=conn)
-            if live:
-                if live["kind"] == kind and live["status"] == "lobby":
-                    return dict(live)
-                raise ValueError(msg.challenge_busy)
-            sid = uuid.uuid4().hex
-            conn.execute(
-                """
-                INSERT INTO challenge_sessions (
-                  project_id, id, kind, status, duration_seconds, created_at
-                ) VALUES (%s, %s, %s, 'lobby', %s, %s)
-                """,
-                (project_id, sid, kind, duration, now),
+            n = store._n(
+                store._one(
+                    """
+                    SELECT COUNT(*) AS n FROM challenge_sessions
+                    WHERE project_id = %s AND status IN ('lobby', 'running')
+                    """,
+                    (project_id,),
+                    conn=conn,
+                )
             )
+            if n >= LIVE_ROOM_MAX:
+                raise ValueError(msg.challenge_room_cap)
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO challenge_sessions (
+                      project_id, id, kind, status, name, pin,
+                      duration_seconds, created_at
+                    ) VALUES (%s, %s, %s, 'lobby', %s, %s, %s, %s)
+                    """,
+                    (project_id, sid, kind, name, pin, duration, now),
+                )
+            except UniqueViolation as e:
+                c = (e.diag.constraint_name or "") if e.diag else ""
+                if "live_pin" in c:
+                    raise ValueError(msg.challenge_pin_taken) from e
+                raise ValueError(msg.challenge_name_taken) from e
             return get_session(project_id, sid, conn=conn)
 
 
-def join(project_id, device_id):
+def join(project_id, device_id, session_id):
     with store.pg().connection() as conn:
         with conn.transaction():
-            live = live_session(project_id, conn=conn)
-            if not live:
-                raise ValueError(msg.challenge_not_open)
-            existing = get_player(project_id, live["id"], device_id, conn=conn)
-            if existing:
-                return dict(live), dict(existing)
-            if live["status"] != "lobby":
+            existing_live = player_live(project_id, device_id, conn=conn)
+            if existing_live:
+                return dict(existing_live), get_player(
+                    project_id, existing_live["id"], device_id, conn=conn
+                )
+            live = get_session(project_id, session_id, conn=conn)
+            if not live or live["status"] != "lobby":
                 raise ValueError(msg.challenge_not_open)
             cap = player_cap(live["kind"])
             n = store._n(
@@ -374,15 +573,89 @@ def join(project_id, device_id):
             return dict(live), get_player(project_id, live["id"], device_id, conn=conn)
 
 
+def join_by_pin(project_id, device_id, pin):
+    pin = (pin or "").strip()
+    if not PIN_RE.fullmatch(pin):
+        raise ValueError(msg.challenge_bad_pin)
+    live = player_live(project_id, device_id)
+    if live:
+        return dict(live), get_player(project_id, live["id"], device_id)
+    found = session_by_pin(project_id, pin)
+    if not found:
+        raise ValueError(msg.challenge_pin_wrong)
+    if found["status"] != "lobby":
+        raise ValueError(msg.challenge_already_started)
+    return join(project_id, device_id, found["id"])
+
+
+def clear_players(project_id, session_id):
+    with store.pg().connection() as conn:
+        with conn.transaction():
+            live = get_session(project_id, session_id, conn=conn)
+            if not live or live["status"] != "lobby":
+                raise ValueError(msg.challenge_not_open)
+            conn.execute(
+                """
+                DELETE FROM challenge_players
+                WHERE project_id = %s AND session_id = %s
+                """,
+                (project_id, session_id),
+            )
+            return get_session(project_id, session_id, conn=conn)
+
+
+def delete_room(project_id, session_id):
+    folder = store.photo_dir(project_id) / "challenge" / session_id
+    with store.pg().connection() as conn:
+        with conn.transaction():
+            live = get_session(project_id, session_id, conn=conn)
+            if not live:
+                return
+            if live["status"] == "running":
+                raise ValueError(msg.challenge_cant_delete_live)
+            conn.execute(
+                """
+                DELETE FROM challenge_sessions
+                WHERE project_id = %s AND id = %s
+                """,
+                (project_id, session_id),
+            )
+    if folder.exists():
+        shutil.rmtree(folder)
+
+
+def _letter(nickname):
+    text = (nickname or "?").strip()
+    return text[0] if text else "?"
+
+
+def _face(project_id, session_id, p):
+    did = p["device_id"]
+    name = (p.get("display_name") or "").strip() or store.nickname_of(did) or msg.guest_name
+    ava = ""
+    if p.get("avatar_id"):
+        ava = (
+            f"/photos/{project_id}/challenge/{session_id}/ava-{did}.jpg"
+            f"?v={p['avatar_id']}"
+        )
+    else:
+        ava = avatar_url(project_id, did)
+    return {
+        "device_id": did,
+        "nickname": name,
+        "avatar_url": ava,
+        "letter": _letter(name),
+    }
+
+
 def waiting_of(project_id, session_id, conn=None):
     out = []
     for p in list_players(project_id, session_id, conn=conn):
+        face = _face(project_id, session_id, p)
         out.append(
             {
-                "device_id": p["device_id"],
+                **face,
                 "slot": p["slot"],
-                "nickname": store.nickname_of(p["device_id"]) or msg.guest_name,
-                "avatar_url": avatar_url(project_id, p["device_id"]),
                 "ready": bool(p.get("ready_at")),
             }
         )
@@ -398,7 +671,7 @@ def set_ready(project_id, device_id):
     now = time.time()
     with store.pg().connection() as conn:
         with conn.transaction():
-            live = live_session(project_id, conn=conn)
+            live = player_live(project_id, device_id, conn=conn)
             if not live or live["status"] != "lobby":
                 raise ValueError(msg.challenge_not_open)
             player = get_player(project_id, live["id"], device_id, conn=conn)
@@ -416,11 +689,46 @@ def set_ready(project_id, device_id):
             return get_player(project_id, live["id"], device_id, conn=conn)
 
 
-def start_session(project_id):
+def set_lobby_profile(project_id, device_id, nickname=None, avatar_id=None):
+    with store.pg().connection() as conn:
+        with conn.transaction():
+            live = player_live(project_id, device_id, conn=conn)
+            if not live or live["status"] != "lobby":
+                raise ValueError(msg.challenge_not_open)
+            player = get_player(project_id, live["id"], device_id, conn=conn)
+            if not player:
+                raise ValueError(msg.challenge_not_player)
+            if player.get("ready_at"):
+                raise ValueError(msg.challenge_profile_locked)
+            sets = []
+            args = []
+            if nickname is not None:
+                name = (nickname or "").strip()
+                if not name or len(name) > 20:
+                    raise ValueError(msg.nickname_bad)
+                sets.append("display_name = %s")
+                args.append(name)
+            if avatar_id:
+                sets.append("avatar_id = %s")
+                args.append(avatar_id)
+            if not sets:
+                return dict(player)
+            args.extend([project_id, live["id"], device_id])
+            conn.execute(
+                f"""
+                UPDATE challenge_players SET {", ".join(sets)}
+                WHERE project_id = %s AND session_id = %s AND device_id = %s
+                """,
+                args,
+            )
+            return get_player(project_id, live["id"], device_id, conn=conn)
+
+
+def start_session(project_id, session_id):
     now = time.time()
     with store.pg().connection() as conn:
         with conn.transaction():
-            live = live_session(project_id, conn=conn)
+            live = get_session(project_id, session_id, conn=conn)
             if not live:
                 raise ValueError(msg.challenge_not_open)
             if live["status"] != "lobby":
@@ -430,16 +738,15 @@ def start_session(project_id):
                 raise ValueError(msg.challenge_need_player)
             if not all(p.get("ready_at") for p in players):
                 raise ValueError(msg.challenge_need_ready)
-            pick = (cfg().get("adventure") or {}).get("pick") or {}
-            hard_n = int(pick.get("hard") or 2)
-            easy_n = int(pick.get("easy") or 2)
-            demo_specs = list((cfg().get("demo") or {}).get("tasks") or [])
+            high_n, mid_n, low_n = _pick_counts(live["kind"])
+            low_specs = _pick_low(low_n)
+            used_colors = set()
             for p in players:
-                if live["kind"] == "demo":
-                    specs = [dict(s) for s in demo_specs]
-                else:
-                    specs = _pick_hard(project_id, p["device_id"], hard_n, conn)
-                    specs.extend(_pick_easy(easy_n))
+                specs = _pick_high(
+                    project_id, p["device_id"], high_n, live["id"], conn
+                )
+                specs.extend(_pick_mids(live["kind"], mid_n, used_colors))
+                specs.extend(dict(s) for s in low_specs)
                 _insert_tasks(conn, project_id, live["id"], p["device_id"], specs)
             ends = now + int(live["duration_seconds"] or 600)
             conn.execute(
@@ -456,9 +763,8 @@ def start_session(project_id):
 def _refresh_task_score(conn, project_id, session_id, device_id):
     row = store._one(
         """
-        SELECT COALESCE(SUM(points), 0) AS n FROM challenge_tasks
+        SELECT COALESCE(SUM(pass_count * points), 0) AS n FROM challenge_tasks
         WHERE project_id = %s AND session_id = %s AND device_id = %s
-          AND status = 'passed'
         """,
         (project_id, session_id, device_id),
         conn=conn,
@@ -470,11 +776,6 @@ def _refresh_task_score(conn, project_id, session_id, device_id):
         """,
         (store._n(row), project_id, session_id, device_id),
     )
-
-
-def _all_passed(conn, project_id, session_id, device_id):
-    tasks = list_tasks(project_id, session_id, device_id, conn=conn)
-    return bool(tasks) and all(t["status"] == "passed" for t in tasks)
 
 
 def _finish_player(conn, session, device_id, now, expired):
@@ -501,31 +802,49 @@ def _finish_player(conn, session, device_id, now, expired):
 
 
 def maybe_auto_finish(conn, session, device_id, now):
-    if session["status"] != "running":
-        return
-    if _all_passed(conn, session["project_id"], session["id"], device_id):
-        _finish_player(conn, session, device_id, now, expired=False)
+    return
 
 
-def expire_if_needed(project_id, session=None):
+def _expire_one(conn, live, now):
+    if not live or live["status"] != "running":
+        return live
+    if now < (live.get("ends_at") or 0):
+        return live
+    for p in list_players(live["project_id"], live["id"], conn=conn):
+        _finish_player(conn, live, p["device_id"], now, expired=True)
+    return get_session(live["project_id"], live["id"], conn=conn)
+
+
+def expire_if_needed(project_id, session_id=None, session=None):
     now = time.time()
     with store.pg().connection() as conn:
         with conn.transaction():
-            live = session or live_session(project_id, conn=conn)
-            if not live or live["status"] != "running":
-                return live
-            if now < (live.get("ends_at") or 0):
-                return live
-            for p in list_players(project_id, live["id"], conn=conn):
-                _finish_player(conn, live, p["device_id"], now, expired=True)
-            return get_session(project_id, live["id"], conn=conn)
+            live = session
+            if live is None and session_id:
+                live = get_session(project_id, session_id, conn=conn)
+            return _expire_one(conn, live, now)
+
+
+def expire_running(project_id):
+    now = time.time()
+    with store.pg().connection() as conn:
+        with conn.transaction():
+            for live in store._all(
+                """
+                SELECT * FROM challenge_sessions
+                WHERE project_id = %s AND status = 'running'
+                """,
+                (project_id,),
+                conn=conn,
+            ):
+                _expire_one(conn, live, now)
 
 
 def finish_player(project_id, device_id):
     now = time.time()
     with store.pg().connection() as conn:
         with conn.transaction():
-            live = live_session(project_id, conn=conn)
+            live = player_live(project_id, device_id, conn=conn)
             if not live or live["status"] != "running":
                 raise ValueError(msg.challenge_not_running)
             player = get_player(project_id, live["id"], device_id, conn=conn)
@@ -533,8 +852,6 @@ def finish_player(project_id, device_id):
                 raise ValueError(msg.challenge_not_player)
             if player.get("finished_at"):
                 return get_player(project_id, live["id"], device_id, conn=conn)
-            if not _all_passed(conn, project_id, live["id"], device_id):
-                raise ValueError(msg.challenge_not_done)
             _finish_player(conn, live, device_id, now, expired=False)
             return get_player(project_id, live["id"], device_id, conn=conn)
 
@@ -546,20 +863,25 @@ def current_task(tasks):
     return None
 
 
-def submit_photo(project_id, device_id, upload_id, dest_exists):
+def submit_photo(project_id, device_id, upload_id, dest_exists, idx=None):
     if not dest_exists:
         raise ValueError(msg.bad_image)
     with store.pg().connection() as conn:
         with conn.transaction():
-            live = live_session(project_id, conn=conn)
+            live = player_live(project_id, device_id, conn=conn)
             if not live or live["status"] != "running":
                 raise ValueError(msg.challenge_not_running)
             player = get_player(project_id, live["id"], device_id, conn=conn)
             if not player or player.get("finished_at"):
                 raise ValueError(msg.challenge_not_player)
             tasks = list_tasks(project_id, live["id"], device_id, conn=conn)
-            task = current_task(tasks)
+            if idx is None:
+                task = current_task(tasks)
+            else:
+                task = get_task(project_id, live["id"], device_id, idx, conn=conn)
             if not task or task["kind"] not in PHOTO_KINDS:
+                raise ValueError(msg.challenge_no_upload)
+            if task["status"] == "passed":
                 raise ValueError(msg.challenge_no_upload)
             if task["status"] == "judging":
                 raise ValueError(msg.challenge_judging)
@@ -577,16 +899,19 @@ def submit_photo(project_id, device_id, upload_id, dest_exists):
             return get_task(project_id, live["id"], device_id, task["idx"], conn=conn)
 
 
-def request_host(project_id, device_id):
+def request_host(project_id, device_id, idx=None):
     with store.pg().connection() as conn:
         with conn.transaction():
-            live = live_session(project_id, conn=conn)
+            live = player_live(project_id, device_id, conn=conn)
             if not live or live["status"] != "running":
                 raise ValueError(msg.challenge_not_running)
             player = get_player(project_id, live["id"], device_id, conn=conn)
             if not player or player.get("finished_at"):
                 raise ValueError(msg.challenge_not_player)
-            task = current_task(list_tasks(project_id, live["id"], device_id, conn=conn))
+            if idx is None:
+                task = current_task(list_tasks(project_id, live["id"], device_id, conn=conn))
+            else:
+                task = get_task(project_id, live["id"], device_id, idx, conn=conn)
             if not task or task["kind"] != "host":
                 raise ValueError(msg.challenge_no_host)
             conn.execute(
@@ -601,55 +926,76 @@ def request_host(project_id, device_id):
 
 
 def _set_status(conn, session, device_id, idx, status, reviewed_by, score=None, detail=None):
+    extra = ""
+    args = [
+        status,
+        reviewed_by,
+        score,
+        detail,
+        session["project_id"],
+        session["id"],
+        device_id,
+        idx,
+    ]
+    if status == "passed":
+        extra = ", pass_count = pass_count + 1"
     conn.execute(
-        """
+        f"""
         UPDATE challenge_tasks
         SET status = %s, reviewed_by = %s,
             judge_score = COALESCE(%s, judge_score),
             judge_detail = COALESCE(%s, judge_detail)
+            {extra}
         WHERE project_id = %s AND session_id = %s AND device_id = %s AND idx = %s
         """,
-        (
-            status,
-            reviewed_by,
-            score,
-            detail,
-            session["project_id"],
-            session["id"],
-            device_id,
-            idx,
-        ),
+        args,
     )
     _refresh_task_score(conn, session["project_id"], session["id"], device_id)
     maybe_auto_finish(conn, session, device_id, time.time())
 
 
-def host_review(project_id, device_id, idx, passed, reviewer):
+def host_review(project_id, session_id, device_id, idx, passed, reviewer):
     with store.pg().connection() as conn:
         with conn.transaction():
-            live = live_session(project_id, conn=conn)
+            live = get_session(project_id, session_id, conn=conn)
             if not live or live["status"] != "running":
                 raise ValueError(msg.challenge_not_running)
             task = get_task(project_id, live["id"], device_id, idx, conn=conn)
             if not task or task["kind"] != "host":
                 raise ValueError(msg.challenge_no_host)
-            if task["status"] not in ("awaiting_host", "failed", "pending"):
+            if task["status"] != "awaiting_host":
                 raise ValueError(msg.challenge_bad_review)
-            _set_status(
-                conn,
-                live,
-                device_id,
-                idx,
-                "passed" if passed else "failed",
-                reviewer,
-            )
+            if passed:
+                conn.execute(
+                    """
+                    UPDATE challenge_tasks
+                    SET status = 'pending', reviewed_by = %s,
+                        pass_count = pass_count + 1
+                    WHERE project_id = %s AND session_id = %s
+                      AND device_id = %s AND idx = %s
+                    """,
+                    (reviewer, project_id, live["id"], device_id, idx),
+                )
+                conn.execute(
+                    """
+                    UPDATE challenge_players
+                    SET refresh_left = refresh_left + 1
+                    WHERE project_id = %s AND session_id = %s AND device_id = %s
+                    """,
+                    (project_id, live["id"], device_id),
+                )
+                _rotate_low(conn, project_id, live["id"], device_id, idx)
+                _refresh_task_score(conn, project_id, live["id"], device_id)
+                maybe_auto_finish(conn, live, device_id, time.time())
+            else:
+                _set_status(conn, live, device_id, idx, "failed", reviewer)
             return get_task(project_id, live["id"], device_id, idx, conn=conn)
 
 
-def override_review(project_id, device_id, idx, passed, reviewer):
+def override_review(project_id, session_id, device_id, idx, passed, reviewer):
     with store.pg().connection() as conn:
         with conn.transaction():
-            live = live_session(project_id, conn=conn)
+            live = get_session(project_id, session_id, conn=conn)
             if not live:
                 raise ValueError(msg.challenge_not_open)
             task = get_task(project_id, live["id"], device_id, idx, conn=conn)
@@ -679,7 +1025,8 @@ def apply_judge(project_id, session_id, device_id, idx, score, detail):
             conn.execute(
                 """
                 UPDATE challenge_tasks
-                SET status = %s, judge_score = %s, judge_detail = %s
+                SET status = %s, judge_score = %s, judge_detail = %s,
+                    pass_count = CASE WHEN %s THEN GREATEST(pass_count, 1) ELSE pass_count END
                 WHERE project_id = %s AND session_id = %s
                   AND device_id = %s AND idx = %s
                 """,
@@ -687,6 +1034,7 @@ def apply_judge(project_id, session_id, device_id, idx, score, detail):
                     "passed" if ok else "failed",
                     float(score),
                     detail or "",
+                    ok,
                     project_id,
                     session_id,
                     device_id,
@@ -702,12 +1050,14 @@ def all_finished(project_id, session_id, conn=None):
     return bool(players) and all(p.get("finished_at") for p in players)
 
 
-def settle(project_id):
+def settle(project_id, session_id):
     with store.pg().connection() as conn:
         with conn.transaction():
-            live = live_session(project_id, conn=conn)
+            live = get_session(project_id, session_id, conn=conn)
             if not live:
                 raise ValueError(msg.challenge_not_open)
+            if live["status"] != "running":
+                raise ValueError(msg.challenge_not_running)
             if not all_finished(project_id, live["id"], conn=conn):
                 raise ValueError(msg.challenge_not_all_done)
             conn.execute(
@@ -718,6 +1068,135 @@ def settle(project_id):
                 (project_id, live["id"]),
             )
             return get_session(project_id, live["id"], conn=conn)
+
+
+def refresh_band(project_id, device_id, band):
+    if band not in ("high", "mid"):
+        raise ValueError(msg.challenge_no_task)
+    with store.pg().connection() as conn:
+        with conn.transaction():
+            live = player_live(project_id, device_id, conn=conn)
+            if not live or live["status"] != "running":
+                raise ValueError(msg.challenge_not_running)
+            player = get_player(project_id, live["id"], device_id, conn=conn)
+            if not player or player.get("finished_at"):
+                raise ValueError(msg.challenge_not_player)
+            left = int(player.get("refresh_left") or 0)
+            if left < 1:
+                raise ValueError(msg.challenge_need_refresh)
+            task = None
+            for t in list_tasks(project_id, live["id"], device_id, conn=conn):
+                if t.get("band") != band:
+                    continue
+                if t["status"] in ("pending", "failed", "passed"):
+                    task = t
+                    break
+            if not task:
+                raise ValueError(msg.challenge_no_task)
+            if band == "high":
+                used = _used_sources(
+                    conn,
+                    project_id,
+                    live["id"],
+                    except_idx=task["idx"],
+                    except_device=device_id,
+                )
+                current = task.get("source_photo_id")
+                pool = person_pool(project_id, device_id, conn=conn)
+                fresh = [
+                    p for p in pool if p["id"] not in used and p["id"] != current
+                ]
+                if not fresh:
+                    fresh = [p for p in pool if p["id"] != current]
+                if not fresh:
+                    raise ValueError(msg.challenge_no_task)
+                src = random.choice(fresh)
+                conn.execute(
+                    """
+                    UPDATE challenge_tasks
+                    SET source_photo_id = %s, status = 'pending',
+                        photo_id = NULL, judge_score = NULL, judge_detail = NULL
+                    WHERE project_id = %s AND session_id = %s
+                      AND device_id = %s AND idx = %s
+                    """,
+                    (src["id"], project_id, live["id"], device_id, task["idx"]),
+                )
+            else:
+                used_colors = _used_colors(
+                    conn,
+                    project_id,
+                    live["id"],
+                    except_idx=task["idx"],
+                    except_device=device_id,
+                )
+                current_color = task.get("color") or ""
+                if current_color:
+                    used_colors.add(current_color)
+                nxt = _pick_mid(1, used_colors)
+                if not nxt:
+                    nxt = _pick_mid(1, {current_color} if current_color else set())
+                if not nxt:
+                    raise ValueError(msg.challenge_no_task)
+                spec = nxt[0]
+                zh, en = _prompt(spec)
+                conn.execute(
+                    """
+                    UPDATE challenge_tasks
+                    SET task_id = %s, kind = %s, prompt_zh = %s, prompt_en = %s,
+                        color = %s, points = %s, source_photo_id = NULL,
+                        status = 'pending', photo_id = NULL,
+                        judge_score = NULL, judge_detail = NULL
+                    WHERE project_id = %s AND session_id = %s
+                      AND device_id = %s AND idx = %s
+                    """,
+                    (
+                        spec.get("id") or task["task_id"],
+                        spec.get("type") or "color",
+                        zh,
+                        en,
+                        spec.get("color"),
+                        int(spec.get("points") or task["points"]),
+                        project_id,
+                        live["id"],
+                        device_id,
+                        task["idx"],
+                    ),
+                )
+            conn.execute(
+                """
+                UPDATE challenge_players
+                SET refresh_left = refresh_left - 1
+                WHERE project_id = %s AND session_id = %s AND device_id = %s
+                  AND refresh_left > 0
+                """,
+                (project_id, live["id"], device_id),
+            )
+            return get_task(project_id, live["id"], device_id, task["idx"], conn=conn)
+
+
+def wipe_history(project_id):
+    root = store.photo_dir(project_id) / "challenge"
+    with store.pg().connection() as conn:
+        with conn.transaction():
+            rows = store._all(
+                """
+                SELECT id FROM challenge_sessions
+                WHERE project_id = %s AND status IN ('settling', 'done')
+                """,
+                (project_id,),
+                conn=conn,
+            )
+            conn.execute(
+                """
+                DELETE FROM challenge_sessions
+                WHERE project_id = %s AND status IN ('settling', 'done')
+                """,
+                (project_id,),
+            )
+    for row in rows:
+        folder = root / row["id"]
+        if folder.exists():
+            shutil.rmtree(folder)
 
 
 def wipe(project_id):
@@ -740,6 +1219,8 @@ def public_task(project_id, session_id, task, lang, with_photo=True):
         "prompt": prompt,
         "points": task["points"],
         "status": task["status"],
+        "band": task.get("band") or "",
+        "pass_count": int(task.get("pass_count") or 0),
         "color": task.get("color") or "",
         "judge_score": task.get("judge_score"),
         "source_url": (
@@ -755,8 +1236,12 @@ def public_task(project_id, session_id, task, lang, with_photo=True):
 
 
 def player_payload(project_id, device_id, lang):
-    live = expire_if_needed(project_id)
     now = time.time()
+    live = player_live(project_id, device_id)
+    if live:
+        live = expire_if_needed(project_id, session=live)
+        if live and live["status"] not in LIVE:
+            live = None
     if not live:
         return {"session": None, "player": None, "tasks": [], "current": None, "now": now}
     player = get_player(project_id, live["id"], device_id)
@@ -783,18 +1268,17 @@ def player_payload(project_id, device_id, lang):
             None
             if not player
             else {
+                **_face(project_id, live["id"], player),
                 "slot": player["slot"],
-                "nickname": store.nickname_of(device_id) or msg.guest_name,
                 "task_score": player["task_score"],
                 "time_score": player["time_score"],
                 "score": player["task_score"] + player["time_score"],
                 "finished": bool(player.get("finished_at")),
                 "ready": bool(player.get("ready_at")),
+                "can_edit": live["status"] == "lobby" and not player.get("ready_at"),
+                "refresh_left": int(player.get("refresh_left") or 0),
                 "can_finish": bool(
-                    live["status"] == "running"
-                    and not player.get("finished_at")
-                    and tasks
-                    and all(t["status"] == "passed" for t in tasks)
+                    live["status"] == "running" and not player.get("finished_at")
                 ),
             }
         ),
@@ -803,15 +1287,15 @@ def player_payload(project_id, device_id, lang):
             public_task(project_id, live["id"], cur, lang) if cur else None
         ),
         "waiting": waiting,
-        "player_count": len(waiting) if waiting else len(list_players(project_id, live["id"])),
-        "ready_count": sum(1 for w in waiting if w["ready"]),
-        "all_ready": all_ready(project_id, live["id"]) if live["status"] == "lobby" else False,
+        **_lobby_counts(waiting),
         "now": now,
     }
 
 
-def god_payload(project_id, lang, can_override):
-    live = expire_if_needed(project_id)
+def god_payload(project_id, session_id, lang, can_override):
+    live = expire_if_needed(project_id, session_id=session_id)
+    if live and live["status"] not in LIVE:
+        live = None
     now = time.time()
     slots = [None, None, None, None]
     can_start = False
@@ -829,10 +1313,8 @@ def god_payload(project_id, lang, can_override):
                 continue
             tasks = list_tasks(project_id, live["id"], p["device_id"])
             slots[p["slot"]] = {
+                **_face(project_id, live["id"], p),
                 "slot": p["slot"],
-                "device_id": p["device_id"],
-                "nickname": store.nickname_of(p["device_id"]) or msg.guest_name,
-                "avatar_url": avatar_url(project_id, p["device_id"]),
                 "score": p["task_score"] + p["time_score"],
                 "task_score": p["task_score"],
                 "time_score": p["time_score"],
@@ -855,9 +1337,7 @@ def god_payload(project_id, lang, can_override):
         "session": session,
         "slots": slots,
         "waiting": waiting,
-        "player_count": len(waiting),
-        "ready_count": sum(1 for w in waiting if w["ready"]),
-        "all_ready": bool(waiting) and all(w["ready"] for w in waiting),
+        **_lobby_counts(waiting),
         "can_start": can_start,
         "can_settle": can_settle,
         "can_override": can_override,
@@ -874,9 +1354,8 @@ def results_payload(project_id, session_id, lang):
     for p in list_players(project_id, session_id):
         players.append(
             {
+                **_face(project_id, session_id, p),
                 "slot": p["slot"],
-                "nickname": store.nickname_of(p["device_id"]) or msg.guest_name,
-                "avatar_url": avatar_url(project_id, p["device_id"]),
                 "score": p["task_score"] + p["time_score"],
                 "task_score": p["task_score"],
                 "time_score": p["time_score"],

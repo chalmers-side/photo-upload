@@ -7,9 +7,12 @@
     position: fixed;
     inset: 0;
     z-index: 1;
-    padding: 64px 12px 12px;
+    padding: 44px 12px 12px;
     box-sizing: border-box;
   }
+  .back-btn,
+  .chrome-home,
+  .chrome-end { display: none !important; }
   .god-grid {
     display: grid;
     grid-template: 1fr 1fr / 1fr 1fr;
@@ -49,15 +52,168 @@
   .pane-score { font-weight: 700; font-size: 18px; }
   .pane-name { font-size: 14px; color: var(--muted); }
   .pane-tasks { list-style: none; margin: 0; padding: 0; overflow: auto; }
-  .pane-tasks li {
+  .quest {
     display: grid;
-    grid-template-columns: 1fr auto;
-    gap: 6px;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: 6px 8px;
     align-items: center;
-    font-size: 13px;
-    margin: 0 0 6px;
+    margin: 0 0 8px;
+    padding: 8px 10px;
+    border-radius: 16px;
+    background: rgba(255, 252, 247, 0.92);
+    border: 1px solid var(--frost-line);
+    box-shadow: 0 4px 12px rgba(28, 25, 21, 0.06);
   }
-  .pane-tasks button { font-size: 12px; padding: 4px 8px; }
+  .quest.is-await { border-color: #d4af37; }
+  .quest:has(.quest-shots) {
+    grid-template-columns: auto minmax(0, 1fr) auto auto;
+  }
+  .quest-pts {
+    font-weight: 700;
+    font-size: var(--god-pts);
+    color: #fff;
+    line-height: 1;
+    white-space: nowrap;
+    padding: var(--god-st-pad);
+    border-radius: 999px;
+    background: var(--muted);
+  }
+  .quest-pts.is-high { background: var(--err); }
+  .quest-pts.is-mid { background: #d4af37; }
+  .quest-pts.is-low,
+  .quest-pts.is-solo { background: var(--muted); }
+  .quest.is-done .quest-title { opacity: 0.5; }
+  .quest-shots {
+    display: flex;
+    gap: 8px;
+  }
+  .quest-shot {
+    appearance: none;
+    display: grid;
+    justify-items: center;
+    gap: 2px;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    background: none;
+    font: inherit;
+    color: var(--muted);
+    cursor: pointer;
+  }
+  .quest-shot-frame {
+    width: var(--god-thumb);
+    height: var(--god-thumb);
+    border-radius: var(--god-shot-radius);
+    overflow: hidden;
+    background: #ddd4c6;
+    display: block;
+  }
+  .quest-shot-frame img {
+    width: var(--god-thumb);
+    height: var(--god-thumb);
+    object-fit: cover;
+    object-position: center;
+    display: block;
+  }
+  .quest-shot span {
+    font-size: var(--god-shot-cap);
+    font-weight: 700;
+    line-height: 1.2;
+  }
+  .quest.is-refresh {
+    animation: ch-swap 0.6s ease;
+  }
+  @keyframes ch-swap {
+    0% { transform: scale(1); }
+    30% {
+      transform: scale(0.96);
+      border-color: #d4af37;
+      box-shadow: 0 0 0 2px #d4af37;
+      filter: brightness(1.2);
+    }
+    100% { transform: scale(1); }
+  }
+  .quest-mark {
+    font-weight: 700;
+    font-size: var(--god-mark);
+    color: var(--muted);
+    line-height: 1;
+    padding: 0 4px;
+  }
+  .quest-meta {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .quest-band {
+    font-size: var(--god-band);
+    font-weight: 700;
+    letter-spacing: 0.04em;
+  }
+  .quest-band.is-high { color: var(--err); }
+  .quest-band.is-mid { color: #d4af37; }
+  .quest-band.is-low,
+  .quest-band.is-solo { color: var(--muted); }
+  .quest-title { font-size: var(--god-title); font-weight: 700; color: var(--ink); }
+  .quest-st {
+    font-size: var(--god-st);
+    color: #fff;
+    font-weight: 700;
+    padding: var(--god-st-pad);
+    border-radius: 999px;
+    line-height: 1.2;
+    white-space: nowrap;
+  }
+  .quest-st.is-pass { background: #2f7d4a; }
+  .quest-st.is-open { background: var(--muted); }
+  .quest-st.is-fail { background: var(--err); }
+  .pane-tasks .btn { font-size: var(--god-btn); padding: var(--god-btn-pad); }
+  .pane-tasks .btn:disabled {
+    filter: grayscale(1);
+    opacity: 0.45;
+    cursor: default;
+  }
+  @media (max-width: 640px) {
+    .god-stage {
+      --god-band: 22px;
+      --god-title: 26px;
+      --god-st: 24px;
+      --god-btn: 24px;
+      --god-btn-pad: 8px 16px;
+      --god-mark: 44px;
+      --god-thumb: 72px;
+      --god-st-pad: 2px 10px;
+      --god-pts: 22px;
+      --god-shot-cap: 12px;
+      --god-shot-radius: 16px;
+    }
+  }
+  @media (min-width: 641px) {
+    .god-stage {
+      --god-band: 22px;
+      --god-title: 26px;
+      --god-st: 24px;
+      --god-btn: 24px;
+      --god-btn-pad: 8px 16px;
+      --god-mark: 44px;
+      --god-thumb: 80px;
+      --god-st-pad: 2px 10px;
+      --god-pts: 26px;
+      --god-shot-cap: 12px;
+      --god-shot-radius: 16px;
+    }
+  }
+  .pane-ava-fallback {
+    width: 56px;
+    height: 56px;
+    border-radius: 50%;
+    border: 3px solid #fff;
+    background: #ddd4c6;
+    display: grid;
+    place-items: center;
+    font-weight: 700;
+    color: var(--ink-fade);
+  }
   .settle {
     position: absolute;
     left: 50%;
@@ -72,14 +228,29 @@
     background: rgba(28, 25, 21, 0.82);
     display: grid;
     place-items: center;
+    padding: 24px;
+    box-sizing: border-box;
+    cursor: pointer;
   }
   .preview img {
-    max-width: 90%;
-    max-height: 90%;
+    max-width: 90vw;
+    max-height: 90vh;
+    width: auto;
+    height: auto;
+    min-width: 0;
+    min-height: 0;
     object-fit: contain;
     border-radius: 22px;
   }
-  .preview[hidden] { display: none !important; }
+  .preview[hidden],
+  .preview img[hidden],
+  .preview-empty[hidden] { display: none !important; }
+  .preview-empty {
+    margin: 0;
+    font-weight: 700;
+    color: #f4efe6;
+    font-size: var(--god-title);
+  }
   .god-bar {
     position: absolute;
     top: 14px;
@@ -91,7 +262,7 @@
 </style>
 {% endblock %}
 {% block body %}
-<a class="back-btn" href="{{ url_for('project_home', slug=project.slug) }}">{{ msg.lottery_back }}</a>
+<a class="back-btn" href="{{ url_for('challenge_room', slug=project.slug, session_id=session_id) }}">{{ msg.lottery_back }}</a>
 <p class="god-bar" id="clock"></p>
 <div class="god-stage">
   <div class="god-grid">
@@ -103,12 +274,15 @@
   <button class="btn lottery settle" type="button" id="start" hidden>{{ msg.challenge_start }}</button>
   <button class="btn lottery settle" type="button" id="settle" hidden>{{ msg.challenge_settle }}</button>
 </div>
-<div class="preview" id="preview" hidden><img alt=""></div>
+<div class="preview" id="preview" hidden>
+  <p class="preview-empty" id="preview-empty" hidden>{{ msg.challenge_no_target }}</p>
+  <img alt="" hidden>
+</div>
 <script>
-  const godUrl = {{ url_for('challenge_god_api', slug=project.slug) | tojson }};
-  const reviewUrl = {{ url_for('challenge_review', slug=project.slug) | tojson }};
-  const settleUrl = {{ url_for('challenge_settle', slug=project.slug) | tojson }};
-  const startUrl = {{ url_for('challenge_start', slug=project.slug) | tojson }};
+  const godUrl = {{ url_for('challenge_god_api', slug=project.slug, session_id=session_id) | tojson }};
+  const reviewUrl = {{ url_for('challenge_review', slug=project.slug, session_id=session_id) | tojson }};
+  const settleUrl = {{ url_for('challenge_settle', slug=project.slug, session_id=session_id) | tojson }};
+  const startUrl = {{ url_for('challenge_start', slug=project.slug, session_id=session_id) | tojson }};
   const copy = {
     empty: {{ msg.challenge_empty_slot | tojson }},
     passed: {{ msg.challenge_passed | tojson }},
@@ -124,6 +298,15 @@
     lobby: {{ msg.challenge_lobby | tojson }},
     readyYes: {{ msg.challenge_ready_yes | tojson }},
     readyNo: {{ msg.challenge_ready_no | tojson }},
+    approve: {{ msg.challenge_approve | tojson }},
+    doing: {{ msg.challenge_doing | tojson }},
+    bandHigh: {{ msg.challenge_band_high | tojson }},
+    bandMid: {{ msg.challenge_band_mid | tojson }},
+    bandLow: {{ msg.challenge_band_low | tojson }},
+    bandSolo: {{ msg.challenge_band_solo | tojson }},
+    pts: {{ msg.challenge_pts | tojson }},
+    orig: {{ msg.challenge_orig | tojson }},
+    userShot: {{ msg.challenge_user_shot | tojson }},
   };
   const canOverride = {{ can_override | tojson }};
   const clock = document.getElementById("clock");
@@ -131,17 +314,70 @@
   const settleBtn = document.getElementById("settle");
   const preview = document.getElementById("preview");
   const previewImg = preview.querySelector("img");
+  const previewEmpty = document.getElementById("preview-empty");
   const panes = [...document.querySelectorAll(".pane")];
+  const lastPrints = {};
+  let printSession = null;
 
   function fill(s, vals) {
     return Object.entries(vals).reduce((t, [k, v]) => t.replaceAll("{" + k + "}", String(v)), s);
   }
-  function stLabel(st) {
-    if (st === "passed") return copy.passed;
-    if (st === "failed") return copy.failed;
-    if (st === "judging") return copy.judging;
-    if (st === "awaiting_host") return copy.awaiting;
+  function stLabel(t) {
+    if (t.band === "low") {
+      if (t.status === "awaiting_host") return copy.awaiting;
+      if (t.status === "failed") return copy.failed;
+      return copy.pending;
+    }
+    if (t.status === "passed") return copy.passed;
+    if (t.status === "failed") return copy.failed;
+    if (t.status === "judging") return copy.judging;
+    if (t.status === "awaiting_host") return copy.awaiting;
     return copy.pending;
+  }
+  function stKind(t) {
+    if (t.status === "passed") return "pass";
+    if (t.status === "failed") return "fail";
+    return "open";
+  }
+  function bandLabel(band) {
+    if (band === "high") return copy.bandHigh;
+    if (band === "mid") return copy.bandMid;
+    if (band === "low") return copy.bandLow;
+    return copy.bandSolo;
+  }
+  function openPreview(url) {
+    if (url) {
+      previewEmpty.hidden = true;
+      previewImg.hidden = false;
+      previewImg.src = url;
+    } else {
+      previewImg.removeAttribute("src");
+      previewImg.hidden = true;
+      previewEmpty.hidden = false;
+    }
+    preview.hidden = false;
+  }
+  function taskPrint(t) {
+    return [t.task_id || "", t.prompt || "", t.source_url || "", t.color || ""].join("\0");
+  }
+  function makeShot(label, url) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "quest-shot";
+    const frame = document.createElement("span");
+    frame.className = "quest-shot-frame";
+    if (url) {
+      const img = document.createElement("img");
+      img.alt = "";
+      img.src = url;
+      frame.append(img);
+    }
+    btn.append(frame);
+    const cap = document.createElement("span");
+    cap.textContent = label;
+    btn.append(cap);
+    btn.addEventListener("click", () => openPreview(url));
+    return btn;
   }
   async function review(deviceId, idx, passed) {
     const res = await fetch(reviewUrl, {
@@ -182,6 +418,11 @@
       img.alt = "";
       img.src = slot.avatar_url;
       head.append(img);
+    } else {
+      const ava = document.createElement("div");
+      ava.className = "pane-ava-fallback";
+      ava.textContent = slot.letter || "?";
+      head.append(ava);
     }
     head.append(meta);
     const list = document.createElement("ul");
@@ -192,19 +433,57 @@
     }
     (slot.tasks || []).forEach((t) => {
       const li = document.createElement("li");
-      const label = document.createElement("span");
-      label.textContent = t.prompt + " · " + stLabel(t.status);
-      if (t.status === "passed" && t.photo_url) {
-        label.style.cursor = "pointer";
-        label.addEventListener("click", () => {
-          previewImg.src = t.photo_url;
-          preview.hidden = false;
-        });
+      li.className = "quest";
+      if (t.kind === "host" && t.status === "awaiting_host") {
+        li.classList.add("is-await");
+      }
+      if (t.status === "passed") li.classList.add("is-done");
+      const printKey = slot.device_id + ":" + t.idx;
+      const print = taskPrint(t);
+      if (lastPrints[printKey] && lastPrints[printKey] !== print) li.classList.add("is-refresh");
+      lastPrints[printKey] = print;
+      const pts = document.createElement("div");
+      pts.className = "quest-pts is-" + (t.band || "solo");
+      pts.textContent = fill(copy.pts, { n: t.points || 0 });
+      li.append(pts);
+      const body = document.createElement("div");
+      const meta = document.createElement("div");
+      meta.className = "quest-meta";
+      const band = document.createElement("div");
+      band.className = "quest-band is-" + (t.band || "solo");
+      band.textContent = bandLabel(t.band);
+      const st = document.createElement("div");
+      st.className = "quest-st is-" + stKind(t);
+      st.textContent = stLabel(t);
+      meta.append(band, st);
+      const title = document.createElement("div");
+      title.className = "quest-title";
+      title.textContent = t.prompt;
+      body.append(meta, title);
+      const shots = document.createElement("div");
+      shots.className = "quest-shots";
+      if (t.band === "high") {
+        shots.append(makeShot(copy.orig, t.source_url), makeShot(copy.userShot, t.photo_url));
+      } else if (t.photo_url) {
+        shots.append(makeShot(copy.userShot, t.photo_url));
       }
       const actions = document.createElement("span");
-      const needHost = t.kind === "host" && t.status === "awaiting_host";
-      const needOver = canOverride && t.kind !== "host";
-      if (needHost || needOver) {
+      if (t.status === "passed") {
+        const mark = document.createElement("span");
+        mark.className = "quest-mark";
+        mark.textContent = "✓";
+        mark.setAttribute("aria-label", copy.passed);
+        actions.append(mark);
+      } else if (t.kind === "host" && t.status !== "judging") {
+        const ok = document.createElement("button");
+        ok.className = "btn lottery small";
+        ok.type = "button";
+        ok.textContent = copy.approve;
+        const ready = t.status === "awaiting_host";
+        ok.disabled = !ready;
+        if (ready) ok.addEventListener("click", () => review(slot.device_id, t.idx, true));
+        actions.append(ok);
+      } else if (canOverride && t.kind !== "host" && t.status !== "passed") {
         const ok = document.createElement("button");
         ok.className = "btn small";
         ok.type = "button";
@@ -217,7 +496,8 @@
         no.addEventListener("click", () => review(slot.device_id, t.idx, false));
         actions.append(ok, no);
       }
-      li.append(label, actions);
+      if (shots.childNodes.length) li.append(body, shots, actions);
+      else li.append(body, actions);
       list.append(li);
     });
     el.append(head, list);
@@ -232,13 +512,21 @@
       return;
     }
     const session = data.session;
+    const sid = session && session.id;
+    if (sid !== printSession) {
+      for (const k of Object.keys(lastPrints)) delete lastPrints[k];
+      printSession = sid;
+    }
     if (session && session.status === "running") {
       const r = session.remain || 0;
       const m = String(Math.floor(r / 60)).padStart(2, "0");
       const s = String(r % 60).padStart(2, "0");
       clock.textContent = fill(copy.remain, { m, s });
     } else if (session && session.status === "lobby") {
-      clock.textContent = fill(copy.lobby, { n: data.player_count || 0, k: data.ready_count || 0 });
+      clock.textContent = fill(copy.lobby, {
+        n: data.waiting_count != null ? data.waiting_count : Math.max(0, (data.player_count || 0) - (data.ready_count || 0)),
+        k: data.ready_count || 0,
+      });
     } else clock.textContent = "";
     const lobby = !!(session && session.status === "lobby");
     panes.forEach((el) => {
@@ -254,6 +542,7 @@
     const res = await fetch(startUrl, { method: "POST", headers: { "X-Requested-With": "XMLHttpRequest" } });
     const data = await res.json();
     if (data.error) alert(data.error);
+    else if (data.url) location.href = data.url;
   });
   settleBtn.addEventListener("click", async () => {
     const res = await fetch(settleUrl, { method: "POST", headers: { "X-Requested-With": "XMLHttpRequest" } });
@@ -261,7 +550,12 @@
     if (data.error) { alert(data.error); return; }
     if (data.url) location.href = data.url;
   });
-  preview.addEventListener("click", () => { preview.hidden = true; previewImg.src = ""; });
+  preview.addEventListener("click", () => {
+    preview.hidden = true;
+    previewImg.removeAttribute("src");
+    previewImg.hidden = true;
+    previewEmpty.hidden = true;
+  });
 </script>
 {% endblock %}
 {% block credit %}{% endblock %}

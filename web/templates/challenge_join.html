@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}{{ msg.challenge_title.format(name=project.name) }}{% endblock %}
+{% block extra_head %}
+<style>
+  html, body { height: 100%; overflow: hidden; }
+  .ch-stage > .glass-card {
+    overflow: auto;
+    display: grid;
+    place-items: center;
+    padding: 24px;
+  }
+  .glass-body { width: min(360px, 100%); text-align: left; }
+  .ch-stage input {
+    width: 100%;
+    box-sizing: border-box;
+    letter-spacing: 0.2em;
+    font-size: 28px;
+    text-align: center;
+  }
+  @media (max-width: 640px) {
+    .ch-stage input { font-size: 24px; }
+  }
+</style>
+{% endblock %}
+{% block body %}
+<a class="back-btn" href="{{ url_for('project_home', slug=project.slug) }}">{{ msg.lottery_back }}</a>
+<div class="glass-stage ch-stage">
+  <div class="glass-card">
+    <div class="glass-body">
+      <h1>{{ msg.challenge }}</h1>
+      <p class="lead">{{ msg.challenge_join_lead }}</p>
+      {% for category, message in get_flashed_messages(with_categories=true) %}
+        <p class="flash {{ category }}">{{ message }}</p>
+      {% endfor %}
+      <form class="stack" method="post" action="{{ url_for('challenge_join', slug=project.slug) }}">
+        <label for="join-pin">{{ msg.challenge_room_pin }}</label>
+        <input id="join-pin" name="pin" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" autocomplete="off" required autofocus>
+        <button class="btn lottery" type="submit">{{ msg.challenge_join_submit }}</button>
+      </form>
+    </div>
+  </div>
+  {% include "_credit.html" %}
+</div>
+{% endblock %}
+{% block credit %}{% endblock %}

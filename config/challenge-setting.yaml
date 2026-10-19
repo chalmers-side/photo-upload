@@ -4,10 +4,15 @@ max_players: 4
 judge_threshold: 0.6
 adventure:
   pick:
-    hard: 2
-    easy: 2
+    high: 1
+    mid: 1
+    low: 2
 demo:
   max_players: 1
+  pick:
+    high: 1
+    mid: 1
+    low: 2
   tasks:
     - id: couple
       type: couple
@@ -15,13 +20,14 @@ demo:
       prompt:
         zh: 請拍攝一張新郎與新娘的照片，並上傳
         en: Take a photo of the bride and groom, then upload it
-hard:
+high:
   - id: find_person
     type: person
-    points: 15
+    points: 25
     prompt:
       zh: 找到畫面中的人請求合照，請先徵得同意
       en: Find the person in this photo and take a group picture. Ask first.
+mid:
   - id: wear_red
     type: color
     color: red
@@ -36,22 +42,36 @@ hard:
     prompt:
       zh: 與穿著白色衣服的賓客合照
       en: Take a photo with a guest wearing white
-easy:
+  - id: wear_black
+    type: color
+    color: black
+    points: 10
+    prompt:
+      zh: 與穿著黑色衣服的賓客合照
+      en: Take a photo with a guest wearing black
+  - id: wear_blue
+    type: color
+    color: blue
+    points: 10
+    prompt:
+      zh: 與穿著藍色衣服的賓客合照
+      en: Take a photo with a guest wearing blue
+low:
   - id: pushups
     type: host
     points: 5
     prompt:
-      zh: 完成伏地挺身，找主持人驗收
-      en: Do push-ups, then find the host to check
-  - id: situps
+      zh: 伏地挺身 x5
+      en: 5 push-ups
+  - id: jump_squats
     type: host
     points: 5
     prompt:
-      zh: 完成仰臥起坐，找主持人驗收
-      en: Do sit-ups, then find the host to check
+      zh: 交互蹲跳 x5
+      en: 5 jump squats
   - id: lap
     type: host
     points: 5
     prompt:
-      zh: 繞場一圈，找主持人驗收
-      en: Walk a lap of the venue, then find the host to check
+      zh: 繞場一圈
+      en: One lap of the venue

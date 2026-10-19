@@ -166,33 +166,33 @@
   .section-settings form { margin-top: 0; }
   .kuji-settings summary .meta { font-weight: 400; }
   .kuji-settings .asset-card .meta { margin: 0; }
-  .kuji-actions {
-    display: flex;
-    flex-wrap: wrap;
+  .reset-list { display: grid; gap: 16px; margin-top: 12px; }
+  .reset-row {
+    display: grid;
     gap: 8px;
-    align-items: stretch;
-    margin-top: 12px;
+    padding-bottom: 14px;
+    border-bottom: 1px solid var(--line);
   }
-  .kuji-actions .btn.small {
-    min-height: 40px;
-    padding: 0 14px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    box-sizing: border-box;
-    border: 1px solid transparent;
-    white-space: nowrap;
-  }
-  .kuji-actions .btn.small.secondary { border-color: var(--line); }
-  .kuji-actions .delete-arm {
-    display: flex;
-    align-items: stretch;
-    margin: 0;
-  }
+  .reset-row:last-child { border-bottom: 0; padding-bottom: 0; }
+  .reset-row .reset-title { margin: 0; font-size: 14px; font-weight: 700; }
+  .reset-row .meta { margin: 0; }
   .admin-block { margin: 0 0 18px; }
 </style>
 {% endblock %}
 {% block body %}
+{% macro reset_arm(title, hint, action) %}
+<div class="reset-row">
+  <p class="reset-title">{{ title }}</p>
+  <p class="meta">{{ hint }}</p>
+  <div class="delete-arm">
+    <button type="button" class="btn secondary delete-project js-delete-arm">{{ title }}</button>
+    <form class="delete-confirm" hidden method="post" action="{{ action }}">
+      <button class="btn secondary delete-project" type="submit">{{ msg.delete_confirm }}</button>
+      <button class="btn secondary delete-project js-delete-cancel" type="button">{{ msg.delete_cancel }}</button>
+    </form>
+  </div>
+</div>
+{% endmacro %}
 {% macro asset_card(p, kind, label) %}
 {% set key = kind.replace("-", "_") %}
 <div class="asset-card">
@@ -261,22 +261,8 @@
         </div>
         <span class="more">{{ msg.project_more }}</span>
       </summary>
+      {% if p.can_delete %}
       <div class="card-arms">
-        <div class="delete-arm">
-          <button type="button" class="btn secondary delete-project js-delete-arm">{{ msg.reset_photos }}</button>
-          <form class="delete-confirm" hidden method="post" action="{{ url_for('admin_reset_photos', project_id=p.id) }}" onsubmit="sessionStorage.setItem('adminOpenProject', '{{ p.id }}')">
-            <button class="btn secondary delete-project" type="submit">{{ msg.delete_confirm }}</button>
-            <button class="btn secondary delete-project js-delete-cancel" type="button">{{ msg.delete_cancel }}</button>
-          </form>
-        </div>
-        <div class="delete-arm">
-          <button type="button" class="btn secondary delete-project js-delete-arm">{{ msg.challenge_wipe }}</button>
-          <form class="delete-confirm" hidden method="post" action="{{ url_for('admin_wipe_challenge', project_id=p.id) }}" onsubmit="sessionStorage.setItem('adminOpenProject', '{{ p.id }}')">
-            <button class="btn secondary delete-project" type="submit">{{ msg.delete_confirm }}</button>
-            <button class="btn secondary delete-project js-delete-cancel" type="button">{{ msg.delete_cancel }}</button>
-          </form>
-        </div>
-        {% if p.can_delete %}
         <div class="delete-arm">
           <button type="button" class="btn danger delete-project js-delete-arm">{{ msg.delete_project }}</button>
           <form class="delete-confirm" hidden method="post" action="{{ url_for('admin_delete_project', project_id=p.id) }}">
@@ -284,10 +270,20 @@
             <button class="btn small secondary js-delete-cancel" type="button">{{ msg.delete_cancel }}</button>
           </form>
         </div>
-        {% endif %}
       </div>
+      {% endif %}
       <p class="meta">{{ msg.project_meta.format(slug=p.slug, count=p.photo_count) }}</p>
       <div class="admin-sections">
+      <details class="settings admin-section" id="sec-reset-{{ p.id }}" data-project="{{ p.id }}">
+        <summary>{{ msg.admin_sec_reset }}</summary>
+        <div class="reset-list">
+          {{ reset_arm(msg.reset_photos, msg.reset_photos_hint, url_for('admin_reset_photos', project_id=p.id)) }}
+          {{ reset_arm(msg.reset_lottery, msg.reset_lottery_hint, url_for('admin_reset_lottery', project_id=p.id)) }}
+          {{ reset_arm(msg.kuji_reset_btn, msg.kuji_reset_hint, url_for('admin_reset_kuji', project_id=p.id)) }}
+          {{ reset_arm(msg.challenge_history_wipe, msg.challenge_history_wipe_hint, url_for('admin_wipe_challenge_history', project_id=p.id)) }}
+          {{ reset_arm(msg.challenge_wipe, msg.challenge_wipe_hint, url_for('admin_wipe_challenge', project_id=p.id)) }}
+        </div>
+      </details>
       <details class="settings admin-section" id="sec-home-{{ p.id }}" data-project="{{ p.id }}">
         <summary>{{ msg.admin_sec_home }}</summary>
         <div class="asset-grid">
@@ -389,17 +385,8 @@
             <label>{{ msg.kuji_per_user_label }}
               <input type="number" name="per_user" min="0" max="50" value="{{ p.kuji.per_user }}" required>
             </label>
+            <button class="btn small" type="submit">{{ msg.settings_save }}</button>
           </form>
-          <div class="kuji-actions">
-            <button class="btn small" type="submit" form="kuji-form-{{ p.id }}">{{ msg.settings_save }}</button>
-            <div class="delete-arm">
-              <button type="button" class="btn small secondary js-delete-arm">{{ msg.kuji_reset_btn }}</button>
-              <form class="delete-confirm" hidden method="post" action="{{ url_for('admin_reset_kuji', project_id=p.id) }}">
-                <button class="btn small secondary" type="submit">{{ msg.delete_confirm }}</button>
-                <button class="btn small secondary js-delete-cancel" type="button">{{ msg.delete_cancel }}</button>
-              </form>
-            </div>
-          </div>
         </div>
       </details>
       </div>

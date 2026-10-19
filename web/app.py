@@ -542,6 +542,17 @@ def create_app():
         flash(msg.kuji_reset_ok.format(name=p["name"]), "ok")
         return redirect(url_for("admin_home"))
 
+    @app.post("/admin/projects/<project_id>/lottery/reset")
+    @edit_required
+    def admin_reset_lottery(project_id):
+        p = store.get_project(project_id)
+        if not p:
+            flash(msg.project_missing, "error")
+            return redirect(url_for("admin_home"))
+        store.reset_lottery_winners(project_id)
+        flash(msg.lottery_reset.format(name=p["name"]), "ok")
+        return redirect(url_for("admin_home"))
+
     @app.post("/p/<slug>/lottery/reset")
     @login_required
     def lottery_reset(slug):

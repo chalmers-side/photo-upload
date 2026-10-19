@@ -31,6 +31,10 @@
     border: 3px solid #fff;
     object-fit: cover;
     background: #ddd4c6;
+    display: grid;
+    place-items: center;
+    font-weight: 700;
+    color: var(--ink-fade);
   }
   .bar-wrap {
     width: 36px;
@@ -67,10 +71,17 @@
   players.forEach((p) => {
     const col = document.createElement("div");
     col.className = "col";
-    const img = document.createElement("img");
-    img.className = "ava";
-    img.alt = p.nickname;
-    if (p.avatar_url) img.src = p.avatar_url;
+    let ava;
+    if (p.avatar_url) {
+      ava = document.createElement("img");
+      ava.className = "ava";
+      ava.alt = "";
+      ava.src = p.avatar_url;
+    } else {
+      ava = document.createElement("div");
+      ava.className = "ava";
+      ava.textContent = p.letter || "?";
+    }
     const wrap = document.createElement("div");
     wrap.className = "bar-wrap";
     const bar = document.createElement("div");
@@ -80,7 +91,7 @@
     const label = document.createElement("div");
     label.className = "label";
     label.textContent = p.nickname + " " + p.score;
-    col.append(img, wrap, label);
+    col.append(ava, wrap, label);
     bars.append(col);
     requestAnimationFrame(() => requestAnimationFrame(() => col.classList.add("is-on")));
   });
