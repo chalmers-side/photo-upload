@@ -23,6 +23,7 @@ from flask import (
 from config import appsetting
 from config import msg
 from web import applog, images, store
+from web.challenge import register as register_challenge
 
 
 def create_app():
@@ -196,7 +197,7 @@ def create_app():
 
     @app.after_request
     def write_project_log(resp):
-        if request.endpoint in ("health", "slideshow_api"):
+        if request.endpoint in ("health", "slideshow_api", "challenge_me", "challenge_god_api"):
             return resp
         err = getattr(g, "log_err", None)
         pid = getattr(g, "project_id", None)
@@ -541,6 +542,17 @@ def create_app():
         flash(msg.kuji_reset_ok.format(name=p["name"]), "ok")
         return redirect(url_for("admin_home"))
 
+    @app.post("/admin/projects/<project_id>/lottery/reset")
+    @edit_required
+    def admin_reset_lottery(project_id):
+        p = store.get_project(project_id)
+        if not p:
+            flash(msg.project_missing, "error")
+            return redirect(url_for("admin_home"))
+        store.reset_lottery_winners(project_id)
+        flash(msg.lottery_reset.format(name=p["name"]), "ok")
+        return redirect(url_for("admin_home"))
+
     @app.post("/p/<slug>/lottery/reset")
     @login_required
     def lottery_reset(slug):
@@ -653,6 +665,10 @@ def create_app():
                 return reply(msg.upload_too_many, error=True)
             if len(caption) > 500:
                 return reply(msg.caption_too_long, error=True)
+            consent_raw = (request.form.get("consent") or "").strip()
+            if consent_raw not in ("yes", "no"):
+                return reply(msg.upload_need_consent, error=True)
+            consent = consent_raw == "yes"
             did, _ = device_id()
             saved = []
             for f in files:
@@ -664,7 +680,9 @@ def create_app():
                     dest.unlink(missing_ok=True)
                     g.log_err = f"{type(e).__name__}: {e}"
                     continue
-                store.add_photo(project["id"], photo_id, caption, did, rebuild=False)
+                store.add_photo(
+                    project["id"], photo_id, caption, did, rebuild=False, consent=consent
+                )
                 saved.append(photo_id)
             if not saved:
                 return reply(msg.bad_image, error=True)
@@ -715,4 +733,5 @@ def create_app():
             g.log_err = str(e)
             return jsonify({"error": str(e)}), 400
 
+    register_challenge(app, load_project, current_name, device_id, login_required)
     return app

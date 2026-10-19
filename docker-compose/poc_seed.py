@@ -4,6 +4,8 @@ Run inside the POC app container: ./poc.sh seed
 """
 
 import io
+import time
+import uuid
 
 from PIL import Image, ImageDraw, ImageFont
 
@@ -78,6 +80,33 @@ def backgrounds(prefix, top, bottom, text):
     }
 
 
+def person_blob():
+    img = Image.new("RGB", (640, 800), "#c8b89a")
+    d = ImageDraw.Draw(img)
+    d.ellipse((180, 120, 460, 420), fill="#e8c4a0")
+    d.rectangle((220, 400, 420, 760), fill="#3a5a9a")
+    return img
+
+
+def seed_guests(pid):
+    for i, name in enumerate(("Ada", "Ben")):
+        did = f"poc-guest-{i}"
+        store.set_nickname(did, name)
+        photo_id = uuid.uuid4().hex
+        dest = store.photo_path(pid, photo_id)
+        images.save_jpeg(as_upload(person_blob(), "JPEG"), dest)
+        with store.pg().connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO photos (
+                  project_id, id, caption, device_id, ts, person, consent
+                ) VALUES (%s, %s, %s, %s, %s, TRUE, TRUE)
+                """,
+                (pid, photo_id, name, did, time.time()),
+            )
+    store.rebuild_slideshow_queue(pid)
+
+
 def main():
     p = store.project_by_slug(SLUG) or store.create_project(NAME, SLUG)
     pid = p["id"]
@@ -104,6 +133,12 @@ def main():
         store.kuji_save(pid, form)
     except ValueError as e:
         print(f"kuji totals kept: {e}")
+
+    if not store._one(
+        "SELECT 1 AS n FROM photos WHERE device_id = %s LIMIT 1",
+        ("poc-guest-0",),
+    ):
+        seed_guests(pid)
 
     print(f"project {NAME!r} slug={SLUG} id={pid}: {len(assets)} assets, kuji {KUJI_TOTALS}")
 

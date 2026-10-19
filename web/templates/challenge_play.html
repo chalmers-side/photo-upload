@@ -1,0 +1,759 @@
+{% extends "base.html" %}
+{% block title %}{{ msg.challenge_title.format(name=project.name) }}{% endblock %}
+{% block extra_head %}
+<style>
+  html, body { height: 100%; overflow: hidden; }
+  .ch-stage > .glass-card {
+    overflow: auto;
+    display: grid;
+    place-items: start center;
+    padding: 24px;
+  }
+  .glass-body { width: min(720px, 100%); text-align: left; }
+  .ch-play-bar {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 12px;
+  }
+  .ch-timer { font-size: 28px; font-weight: 700; margin: 0; }
+  #score, #refresh-left { margin: 0; color: var(--muted); font-weight: 700; }
+  #refresh-left { margin: 4px 0 0; }
+  .ch-task-acts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+  }
+  .ch-tasks {
+    list-style: none;
+    padding: 0;
+    margin: 16px 0 0;
+    display: grid;
+    gap: 10px;
+  }
+  .ch-tasks li {
+    margin: 0;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 8px 12px;
+    align-items: start;
+    padding: var(--ch-card-pad);
+    border-radius: 16px;
+    background: rgba(255, 252, 247, 0.92);
+    border: 1px solid var(--frost-line);
+  }
+  .ch-tasks .is-now:not(.is-done) { border-color: #d4af37; }
+  .ch-tasks .is-done .ch-task-prompt { opacity: 0.5; }
+  .ch-task-pts {
+    font-weight: 700;
+    font-size: var(--ch-pts);
+    color: #fff;
+    line-height: 1.2;
+    white-space: nowrap;
+    padding: var(--ch-st-pad);
+    border-radius: 999px;
+    background: var(--muted);
+  }
+  .ch-task-pts.is-high { background: var(--err); }
+  .ch-task-pts.is-mid { background: #d4af37; }
+  .ch-task-pts.is-low,
+  .ch-task-pts.is-solo { background: var(--muted); }
+  .ch-task-main { min-width: 0; display: grid; gap: 6px; }
+  .ch-task-meta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+  }
+  .ch-task-band {
+    font-weight: 700;
+    font-size: var(--ch-task);
+    letter-spacing: 0.04em;
+  }
+  .ch-task-band.is-high { color: var(--err); }
+  .ch-task-band.is-mid { color: #d4af37; }
+  .ch-task-band.is-low,
+  .ch-task-band.is-solo { color: var(--muted); }
+  .ch-task-st {
+    color: #fff;
+    font-weight: 700;
+    font-size: var(--ch-task-act);
+    padding: var(--ch-st-pad);
+    border-radius: 999px;
+    line-height: 1.2;
+  }
+  .ch-task-st.is-pass { background: #2f7d4a; }
+  .ch-task-st.is-open { background: var(--muted); }
+  .ch-task-st.is-fail { background: var(--err); }
+  .ch-tasks .ch-task-mark {
+    font-weight: 700;
+    color: var(--muted);
+    font-size: var(--ch-task);
+    line-height: 1;
+    padding: 0 6px;
+  }
+  .ch-task-prompt {
+    appearance: none;
+    display: block;
+    width: 100%;
+    margin: 0;
+    font-weight: 700;
+    font-size: var(--ch-task);
+    color: var(--ink);
+    line-height: 1.35;
+    background: none;
+    border: 0;
+    padding: 0;
+    text-align: left;
+    font-family: inherit;
+  }
+  .ch-task-prompt.is-target { cursor: pointer; }
+  .ch-task-line {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px;
+    align-items: center;
+  }
+  .ch-task-shots { display: flex; gap: 8px; }
+  .ch-task-shot {
+    appearance: none;
+    display: grid;
+    justify-items: center;
+    gap: 2px;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    background: none;
+    font: inherit;
+    color: var(--muted);
+    cursor: pointer;
+  }
+  .ch-task-shot-frame {
+    width: var(--ch-thumb);
+    height: var(--ch-thumb);
+    border-radius: var(--ch-shot-radius);
+    overflow: hidden;
+    background: #ddd4c6;
+    display: block;
+  }
+  .ch-task-shot-frame img {
+    width: var(--ch-thumb);
+    height: var(--ch-thumb);
+    object-fit: cover;
+    object-position: center;
+    display: block;
+  }
+  .ch-task-shot span {
+    font-size: var(--ch-shot-cap);
+    font-weight: 700;
+    line-height: 1.2;
+  }
+  .ch-tasks li.is-refresh {
+    animation: ch-swap 0.6s ease;
+  }
+  @keyframes ch-swap {
+    0% { transform: scale(1); }
+    30% {
+      transform: scale(0.96);
+      border-color: #d4af37;
+      box-shadow: 0 0 0 2px #d4af37;
+      filter: brightness(1.2);
+    }
+    100% { transform: scale(1); }
+  }
+  .ch-tasks .ch-task-act {
+    width: auto;
+    white-space: nowrap;
+    font-size: var(--ch-task-act);
+    padding: var(--ch-act-pad);
+  }
+  .ch-refresh-off {
+    opacity: 0.45;
+    filter: grayscale(1);
+  }
+  .ch-hidden { display: none !important; }
+  #finish-btn { margin-top: 20px; width: 100%; }
+  .preview {
+    position: fixed;
+    inset: 0;
+    z-index: 40;
+    background: rgba(28, 25, 21, 0.82);
+    display: grid;
+    place-items: center;
+    padding: 24px;
+    box-sizing: border-box;
+    cursor: pointer;
+  }
+  .preview img {
+    max-width: 90vw;
+    max-height: 90vh;
+    width: auto;
+    height: auto;
+    min-width: 0;
+    min-height: 0;
+    object-fit: contain;
+    border-radius: 22px;
+  }
+  .preview[hidden],
+  .preview img[hidden],
+  .preview-empty[hidden] { display: none !important; }
+  .preview-empty {
+    margin: 0;
+    font-weight: 700;
+    color: #f4efe6;
+  }
+  .ch-wait {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 12px;
+    margin: 12px 0;
+  }
+  .ch-wait[hidden] { display: none !important; }
+  .ch-wait-p {
+    display: grid;
+    justify-items: center;
+    gap: 4px;
+    width: 72px;
+  }
+  .ch-ava {
+    display: grid;
+    place-items: center;
+    border-radius: 50%;
+    border: 3px solid #fff;
+    background: #ddd4c6;
+    color: var(--ink-fade);
+    font-weight: 700;
+    overflow: hidden;
+    animation: ch-float 2.8s ease-in-out infinite;
+  }
+  .ch-ava img { width: 100%; height: 100%; object-fit: cover; }
+  .ch-wait-p.is-off .ch-ava { filter: grayscale(1); opacity: 0.55; }
+  .ch-wait-p span { font-size: 12px; color: var(--muted); text-align: center; }
+  .ch-wait-p.is-edit .ch-ava {
+    cursor: pointer;
+    box-shadow: 0 0 0 2px #d4af37;
+    filter: none;
+    opacity: 1;
+  }
+  .ch-wait-p.is-edit .ch-wait-name {
+    cursor: pointer;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    color: var(--ink);
+    font-weight: 700;
+  }
+  .ch-edit-tag {
+    font-size: var(--ch-edit-tag);
+    font-weight: 700;
+    color: #d4af37;
+    line-height: 1.25;
+    white-space: pre-line;
+    text-align: center;
+  }
+  .ch-wait-p.is-edit input {
+    width: 100%;
+    box-sizing: border-box;
+    font: inherit;
+    font-size: 12px;
+    font-weight: 700;
+    text-align: center;
+    padding: 2px 4px;
+  }
+  #edit-hint { margin: 0 0 8px; color: var(--muted); font-weight: 700; }
+  .ch-wait-p:nth-child(2) .ch-ava { animation-delay: 0.35s; }
+  .ch-wait-p:nth-child(3) .ch-ava { animation-delay: 0.7s; }
+  .ch-wait-p:nth-child(4) .ch-ava { animation-delay: 1.05s; }
+  @keyframes ch-float {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-6px); }
+  }
+  @media (max-width: 640px) {
+    .ch-stage { --ch-edit-tag: 11px; }
+    .ch-wait-p.is-edit { width: 88px; }
+    .ch-tasks { --ch-task: 18px; --ch-task-act: 16px; --ch-pts: 18px; --ch-card-pad: 12px; --ch-st-pad: 2px 8px; --ch-act-pad: 8px 12px; --ch-thumb: 56px; --ch-shot-cap: 12px; --ch-shot-radius: 16px; }
+    .preview-empty { font-size: 18px; }
+    .ch-ava { width: 48px; height: 48px; font-size: 16px; }
+  }
+  @media (min-width: 641px) {
+    .ch-stage { --ch-edit-tag: 12px; }
+    .ch-wait-p.is-edit { width: 96px; }
+    .ch-tasks { --ch-task: 20px; --ch-task-act: 16px; --ch-pts: 20px; --ch-card-pad: 14px; --ch-st-pad: 2px 8px; --ch-act-pad: 8px 12px; --ch-thumb: 64px; --ch-shot-cap: 12px; --ch-shot-radius: 16px; }
+    .preview-empty { font-size: 20px; }
+    .ch-ava { width: 56px; height: 56px; font-size: 18px; }
+  }
+  body.ch-lock .back-btn,
+  body.ch-lock .chrome-home,
+  body.ch-lock .chrome-end { display: none !important; }
+</style>
+{% endblock %}
+{% block body %}
+<a class="back-btn" href="{{ url_for('project_home', slug=project.slug) }}">{{ msg.lottery_back }}</a>
+<div class="glass-stage ch-stage">
+  <div class="glass-card">
+    <div class="glass-body">
+      <h1>{{ msg.challenge }}</h1>
+      {% for category, message in get_flashed_messages(with_categories=true) %}
+        <p class="flash {{ category }}">{{ message }}</p>
+      {% endfor %}
+      <div id="lobby-ui">
+        <p id="lobby-status"></p>
+        <p class="lead" id="wait-lead"></p>
+        <p id="edit-hint" class="ch-hidden">{{ msg.challenge_edit_hint }}</p>
+        <div class="ch-wait" id="wait-row" hidden></div>
+        <button class="btn lottery ch-hidden" type="button" id="ready-btn">{{ msg.challenge_ready }}</button>
+        <input class="ch-hidden" type="file" accept="image/*" id="ava-file">
+      </div>
+      <div id="play-ui" class="ch-hidden">
+        <div class="ch-play-bar">
+          <p class="ch-timer" id="timer"></p>
+          <p id="score"></p>
+        </div>
+        <p id="refresh-left"></p>
+        <form class="ch-hidden" id="up-form" method="post" action="{{ url_for('challenge_upload', slug=project.slug) }}" enctype="multipart/form-data">
+          <input type="hidden" name="idx" id="up-idx" value="">
+          <input type="file" name="photo" accept="image/*" id="up-file">
+        </form>
+        <ul class="ch-tasks" id="tasks"></ul>
+        <button class="btn lottery ch-hidden" type="button" id="finish-btn">{{ msg.challenge_finish }}</button>
+      </div>
+    </div>
+  </div>
+  {% include "_credit.html" %}
+</div>
+<div class="preview" id="preview" hidden>
+  <p class="preview-empty" id="preview-empty" hidden>{{ msg.challenge_no_target }}</p>
+  <img id="preview-img" alt="" hidden>
+</div>
+<div class="glass-overlay" id="refresh-hint" hidden>
+  <div class="glass-card">
+    <div class="overlay-head">
+      <h2>{{ msg.challenge_refresh }}</h2>
+      <button class="overlay-close" type="button" id="hint-close">×</button>
+    </div>
+    <p>{{ msg.challenge_need_refresh }}</p>
+  </div>
+</div>
+{% include "_progress_veil.html" %}
+<script src="{{ url_for('static', filename='upload_progress.js') }}"></script>
+<script>
+  const meUrl = {{ url_for('challenge_me', slug=project.slug) | tojson }};
+  const joinUrl = {{ url_for('challenge_join', slug=project.slug) | tojson }};
+  const hostUrl = {{ url_for('challenge_host_request', slug=project.slug) | tojson }};
+  const finishUrl = {{ url_for('challenge_finish', slug=project.slug) | tojson }};
+  const readyUrl = {{ url_for('challenge_ready', slug=project.slug) | tojson }};
+  const profileUrl = {{ url_for('challenge_profile', slug=project.slug) | tojson }};
+  const refreshUrl = {{ url_for('challenge_refresh', slug=project.slug) | tojson }};
+  const copy = {
+    wait: {{ msg.challenge_wait | tojson }},
+    waitHost: {{ msg.challenge_wait_host | tojson }},
+    closed: {{ msg.challenge_closed | tojson }},
+    remain: {{ msg.challenge_remain | tojson }},
+    score: {{ msg.challenge_score | tojson }},
+    judging: {{ msg.challenge_judging | tojson }},
+    passed: {{ msg.challenge_passed | tojson }},
+    failed: {{ msg.challenge_failed | tojson }},
+    pending: {{ msg.challenge_pending | tojson }},
+    awaiting: {{ msg.challenge_awaiting | tojson }},
+    hostBtn: {{ msg.challenge_host_btn | tojson }},
+    uploadBtn: {{ msg.challenge_upload_btn | tojson }},
+    noTarget: {{ msg.challenge_no_target | tojson }},
+    failedNet: {{ msg.upload_failed | tojson }},
+    lobby: {{ msg.challenge_lobby | tojson }},
+    refresh: {{ msg.challenge_refresh | tojson }},
+    refreshLeft: {{ msg.challenge_refresh_left | tojson }},
+    bandHigh: {{ msg.challenge_band_high | tojson }},
+    bandMid: {{ msg.challenge_band_mid | tojson }},
+    bandLow: {{ msg.challenge_band_low | tojson }},
+    bandSolo: {{ msg.challenge_band_solo | tojson }},
+    pts: {{ msg.challenge_pts | tojson }},
+    orig: {{ msg.challenge_orig | tojson }},
+    userShot: {{ msg.challenge_user_shot | tojson }},
+    edit: {{ msg.challenge_edit | tojson }},
+  };
+  const pieOpts = {
+    uploading: {{ msg.upload_progress | tojson }},
+    processing: {{ msg.upload_processing | tojson }},
+    failed: {{ msg.upload_failed | tojson }},
+    maxEdge: {{ cfg.jpeg_max_edge }},
+  };
+  const lobbyUi = document.getElementById("lobby-ui");
+  const playUi = document.getElementById("play-ui");
+  const lobbyStatus = document.getElementById("lobby-status");
+  const waitLead = document.getElementById("wait-lead");
+  const editHint = document.getElementById("edit-hint");
+  const waitRow = document.getElementById("wait-row");
+  const readyBtn = document.getElementById("ready-btn");
+  const avaFile = document.getElementById("ava-file");
+  const timerEl = document.getElementById("timer");
+  const scoreEl = document.getElementById("score");
+  const refreshLeftEl = document.getElementById("refresh-left");
+  const form = document.getElementById("up-form");
+  const upIdx = document.getElementById("up-idx");
+  const upFile = document.getElementById("up-file");
+  const finishBtn = document.getElementById("finish-btn");
+  const tasksEl = document.getElementById("tasks");
+  const hint = document.getElementById("refresh-hint");
+  const preview = document.getElementById("preview");
+  const previewImg = document.getElementById("preview-img");
+  const previewEmpty = document.getElementById("preview-empty");
+  let selectedIdx = null;
+  const lastPrints = {};
+  let printSession = null;
+  let waitKey = "";
+  let editingName = false;
+
+  function fill(s, vals) {
+    return Object.entries(vals).reduce((t, [k, v]) => t.replaceAll("{" + k + "}", String(v)), s);
+  }
+  function statusLabel(t) {
+    if (t.status === "passed") return copy.passed;
+    if (t.status === "failed") return copy.failed;
+    if (t.status === "judging") return copy.judging;
+    if (t.status === "awaiting_host") return copy.awaiting;
+    return copy.pending;
+  }
+  function stKind(t) {
+    if (t.status === "passed") return "pass";
+    if (t.status === "failed") return "fail";
+    return "open";
+  }
+  function bandLabel(band) {
+    if (band === "high") return copy.bandHigh;
+    if (band === "mid") return copy.bandMid;
+    if (band === "low") return copy.bandLow;
+    return copy.bandSolo;
+  }
+  function openShot(url) {
+    if (url) {
+      previewEmpty.hidden = true;
+      previewImg.hidden = false;
+      previewImg.src = url;
+    } else {
+      previewImg.removeAttribute("src");
+      previewImg.hidden = true;
+      previewEmpty.hidden = false;
+    }
+    preview.hidden = false;
+  }
+  function taskPrint(t) {
+    return [t.task_id || "", t.prompt || "", t.source_url || "", t.color || ""].join("\0");
+  }
+  function makeShot(label, url) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "ch-task-shot";
+    const frame = document.createElement("span");
+    frame.className = "ch-task-shot-frame";
+    if (url) {
+      const img = document.createElement("img");
+      img.alt = "";
+      img.src = url;
+      frame.append(img);
+    }
+    btn.append(frame);
+    const cap = document.createElement("span");
+    cap.textContent = label;
+    btn.append(cap);
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      openShot(url);
+    });
+    return btn;
+  }
+  function pickUpload(idx) {
+    upIdx.value = String(idx);
+    upFile.value = "";
+    upFile.click();
+  }
+  function show(el, on) { el.classList.toggle("ch-hidden", !on); }
+  function lockChrome(on) { document.body.classList.toggle("ch-lock", !!on); }
+  async function saveProfile(body) {
+    try {
+      const res = await fetch(profileUrl, {
+        method: "POST",
+        headers: { "X-Requested-With": "XMLHttpRequest" },
+        body,
+      });
+      const out = await res.json();
+      if (out.error) alert(out.error);
+    } catch (err) { alert(copy.failedNet); }
+  }
+  function paintWait(waiting, player) {
+    if (editingName) return;
+    const canEdit = !!(player && player.can_edit);
+    const key = JSON.stringify(waiting) + (player && player.device_id || "") + canEdit;
+    if (key === waitKey) return;
+    waitKey = key;
+    waitRow.replaceChildren();
+    waiting.forEach((w) => {
+      const mine = !!(player && w.device_id === player.device_id);
+      const box = document.createElement("div");
+      box.className = "ch-wait-p" + (w.ready ? "" : " is-off");
+      if (mine && canEdit) {
+        box.classList.remove("is-off");
+        box.classList.add("is-edit");
+      }
+      const ava = document.createElement("div");
+      ava.className = "ch-ava";
+      if (w.avatar_url) {
+        const img = document.createElement("img");
+        img.src = w.avatar_url;
+        img.alt = "";
+        ava.append(img);
+      } else ava.textContent = w.letter || "?";
+      const name = document.createElement("span");
+      name.className = "ch-wait-name";
+      name.textContent = w.nickname;
+      box.append(ava, name);
+      if (mine && canEdit) {
+        const tag = document.createElement("span");
+        tag.className = "ch-edit-tag";
+        tag.textContent = copy.edit;
+        box.append(tag);
+        ava.addEventListener("click", () => {
+          avaFile.value = "";
+          avaFile.click();
+        });
+        name.addEventListener("click", () => {
+          editingName = true;
+          const input = document.createElement("input");
+          input.type = "text";
+          input.maxLength = 20;
+          input.value = w.nickname;
+          name.replaceWith(input);
+          input.focus();
+          input.select();
+          const done = async () => {
+            const val = input.value.trim();
+            editingName = false;
+            waitKey = "";
+            if (val && val !== w.nickname) {
+              const fd = new FormData();
+              fd.append("nickname", val);
+              await saveProfile(fd);
+            }
+          };
+          input.addEventListener("blur", done);
+          input.addEventListener("keydown", (e) => {
+            if (e.key === "Enter") input.blur();
+            if (e.key === "Escape") {
+              input.value = w.nickname;
+              input.blur();
+            }
+          });
+        });
+      }
+      waitRow.append(box);
+    });
+  }
+
+  async function tick() {
+    let data;
+    try {
+      data = await (await fetch(meUrl, { cache: "no-store" })).json();
+    } catch (err) {
+      setTimeout(tick, 1000);
+      return;
+    }
+    const session = data.session;
+    const sid = session && session.id;
+    if (sid !== printSession) {
+      for (const k of Object.keys(lastPrints)) delete lastPrints[k];
+      printSession = sid;
+      waitKey = "";
+      editingName = false;
+    }
+    const player = data.player;
+    const tasks = data.tasks || [];
+    if (selectedIdx == null && data.current) selectedIdx = data.current.idx;
+    const cur = tasks.find((t) => t.idx === selectedIdx) || data.current;
+    if (!player) {
+      location.href = joinUrl;
+      return;
+    }
+    if (!session) {
+      lockChrome(false);
+      show(lobbyUi, true);
+      show(playUi, false);
+      lobbyStatus.textContent = copy.closed;
+      waitLead.textContent = "";
+      waitRow.hidden = true;
+      show(editHint, false);
+      show(readyBtn, false);
+      setTimeout(tick, 1000);
+      return;
+    }
+    lockChrome(!!(player && (session.status === "lobby" || session.status === "running")));
+    if (session.status === "lobby") {
+      show(lobbyUi, true);
+      show(playUi, false);
+      const ready = !!(player && player.ready);
+      lobbyStatus.textContent = ready ? copy.waitHost : copy.wait;
+      waitLead.textContent = fill(copy.lobby, {
+        n: data.waiting_count != null ? data.waiting_count : Math.max(0, (data.player_count || 0) - (data.ready_count || 0)),
+        k: data.ready_count || 0,
+      });
+      const waiting = data.waiting || [];
+      waitRow.hidden = waiting.length === 0;
+      paintWait(waiting, player);
+      show(editHint, !!(player && player.can_edit));
+      show(readyBtn, !!(player && !ready));
+      setTimeout(tick, 1000);
+      return;
+    }
+    show(lobbyUi, false);
+    show(playUi, true);
+    show(readyBtn, false);
+    const r = session.remain || 0;
+    const m = String(Math.floor(r / 60)).padStart(2, "0");
+    const s = String(r % 60).padStart(2, "0");
+    timerEl.textContent = fill(copy.remain, { m, s });
+    if (player) scoreEl.textContent = fill(copy.score, { n: player.score });
+    else scoreEl.textContent = "";
+    const left = player ? (player.refresh_left || 0) : 0;
+    refreshLeftEl.textContent = fill(copy.refreshLeft, { n: left });
+    const live = session.status === "running" && player && !player.finished;
+    show(finishBtn, session.status === "running" && !!(player && player.can_finish));
+    tasksEl.replaceChildren();
+    tasks.forEach((t) => {
+      const li = document.createElement("li");
+      const done = t.status === "passed";
+      const photo = t.kind === "person" || t.kind === "color" || t.kind === "couple";
+      const canTarget = t.kind === "person" || t.band === "high";
+      if (cur && t.idx === cur.idx) li.classList.add("is-now");
+      if (done) li.classList.add("is-done");
+      const print = taskPrint(t);
+      if (lastPrints[t.idx] && lastPrints[t.idx] !== print) li.classList.add("is-refresh");
+      lastPrints[t.idx] = print;
+      const pts = document.createElement("div");
+      pts.className = "ch-task-pts is-" + (t.band || "solo");
+      pts.textContent = fill(copy.pts, { n: t.points || 0 });
+      const main = document.createElement("div");
+      main.className = "ch-task-main";
+      const meta = document.createElement("div");
+      meta.className = "ch-task-meta";
+      const band = document.createElement("span");
+      band.className = "ch-task-band is-" + (t.band || "solo");
+      band.textContent = bandLabel(t.band);
+      const st = document.createElement("span");
+      st.className = "ch-task-st is-" + stKind(t);
+      st.textContent = statusLabel(t);
+      meta.append(band, st);
+      const prompt = document.createElement(canTarget ? "button" : "p");
+      prompt.className = "ch-task-prompt" + (canTarget ? " is-target" : "");
+      if (canTarget) prompt.type = "button";
+      prompt.textContent = t.prompt;
+      prompt.addEventListener("click", () => {
+        selectedIdx = t.idx;
+        if (canTarget) openShot(t.source_url);
+      });
+      const line = document.createElement("div");
+      line.className = "ch-task-line";
+      line.append(prompt);
+      if (t.band === "high") {
+        const shots = document.createElement("div");
+        shots.className = "ch-task-shots";
+        shots.append(makeShot(copy.orig, t.source_url), makeShot(copy.userShot, t.photo_url));
+        line.append(shots);
+      }
+      main.append(meta, line);
+      const acts = document.createElement("span");
+      acts.className = "ch-task-acts";
+      if (done) {
+        const mark = document.createElement("span");
+        mark.className = "ch-task-mark";
+        mark.textContent = "✓";
+        mark.setAttribute("aria-label", copy.passed);
+        acts.append(mark);
+      }
+      if (!done && photo && t.status !== "judging" && live) {
+        const up = document.createElement("button");
+        up.type = "button";
+        up.className = "btn lottery small ch-task-act";
+        up.textContent = copy.uploadBtn;
+        up.addEventListener("click", () => {
+          selectedIdx = t.idx;
+          pickUpload(t.idx);
+        });
+        acts.append(up);
+      }
+      if (!done && t.kind === "host" && t.status !== "awaiting_host" && live) {
+        const chk = document.createElement("button");
+        chk.type = "button";
+        chk.className = "btn lottery small ch-task-act";
+        chk.textContent = copy.hostBtn;
+        chk.addEventListener("click", async () => {
+          try {
+            const res = await fetch(hostUrl, {
+              method: "POST",
+              headers: { "Content-Type": "application/json", "X-Requested-With": "XMLHttpRequest" },
+              body: JSON.stringify({ idx: t.idx }),
+            });
+            const out = await res.json();
+            if (out.error) alert(out.error);
+            else selectedIdx = t.idx;
+          } catch (err) { alert(copy.failedNet); }
+        });
+        acts.append(chk);
+      }
+      if ((t.band === "high" || t.band === "mid") && t.status !== "judging" && live) {
+        const ref = document.createElement("button");
+        ref.type = "button";
+        ref.textContent = copy.refresh;
+        ref.className = (left > 0 ? "btn lottery" : "btn secondary ch-refresh-off") + " small ch-task-act";
+        ref.addEventListener("click", async () => {
+          if (left < 1) { hint.hidden = false; return; }
+          try {
+            const res = await fetch(refreshUrl, {
+              method: "POST",
+              headers: { "Content-Type": "application/json", "X-Requested-With": "XMLHttpRequest" },
+              body: JSON.stringify({ band: t.band }),
+            });
+            const out = await res.json();
+            if (out.error) alert(out.error);
+            else selectedIdx = t.idx;
+          } catch (err) { alert(copy.failedNet); }
+        });
+        acts.append(ref);
+      }
+      if (acts.childNodes.length) main.append(acts);
+      li.append(pts, main);
+      tasksEl.append(li);
+    });
+    setTimeout(tick, 1000);
+  }
+  tick();
+
+  avaFile.addEventListener("change", async () => {
+    if (!avaFile.files.length) return;
+    const fd = new FormData();
+    fd.append("photo", avaFile.files[0]);
+    waitKey = "";
+    await saveProfile(fd);
+  });
+  upFile.addEventListener("change", () => {
+    if (!upFile.files.length) return;
+    postFormWithPie(form, pieOpts);
+  });
+  preview.addEventListener("click", () => { preview.hidden = true; });
+  readyBtn.addEventListener("click", async () => {
+    try {
+      const res = await fetch(readyUrl, { method: "POST", headers: { "X-Requested-With": "XMLHttpRequest" } });
+      const data = await res.json();
+      if (data.error) alert(data.error);
+    } catch (err) { alert(copy.failedNet); }
+  });
+  finishBtn.addEventListener("click", async () => {
+    try {
+      const res = await fetch(finishUrl, { method: "POST", headers: { "X-Requested-With": "XMLHttpRequest" } });
+      const data = await res.json();
+      if (data.error) alert(data.error);
+    } catch (err) { alert(copy.failedNet); }
+  });
+  document.getElementById("hint-close").addEventListener("click", () => { hint.hidden = true; });
+  hint.addEventListener("click", (e) => { if (e.target === hint) hint.hidden = true; });
+</script>
+{% endblock %}
+{% block credit %}{% endblock %}

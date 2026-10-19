@@ -1,0 +1,222 @@
+{% extends "base.html" %}
+{% block title %}{{ msg.challenge_title.format(name=project.name) }}{% endblock %}
+{% block extra_head %}
+{% include "_cover_layout.html" %}
+<style>
+  .ch-qr { width: min(240px, 100%); height: auto; margin: 12px auto; display: block; }
+  .ch-pin {
+    font-weight: 700;
+    letter-spacing: 0.18em;
+    text-align: center;
+    margin: 8px 0 0;
+  }
+  .ch-wait {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 12px;
+    margin: 8px 0 0;
+  }
+  .ch-wait[hidden] { display: none !important; }
+  .ch-wait-p {
+    display: grid;
+    justify-items: center;
+    gap: 4px;
+    width: 72px;
+  }
+  .ch-ava {
+    display: grid;
+    place-items: center;
+    border-radius: 50%;
+    border: 3px solid #fff;
+    background: #ddd4c6;
+    color: var(--ink-fade);
+    font-weight: 700;
+    overflow: hidden;
+    animation: ch-float 2.8s ease-in-out infinite;
+  }
+  .ch-ava img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+  .ch-wait-p.is-off .ch-ava { filter: grayscale(1); opacity: 0.55; }
+  .ch-wait-p span { font-size: 12px; color: var(--muted); text-align: center; }
+  .ch-wait-p:nth-child(2) .ch-ava { animation-delay: 0.35s; }
+  .ch-wait-p:nth-child(3) .ch-ava { animation-delay: 0.7s; }
+  .ch-wait-p:nth-child(4) .ch-ava { animation-delay: 1.05s; }
+  @keyframes ch-float {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-6px); }
+  }
+  .pjt-stage .actions form[hidden] { display: none !important; }
+  .pjt-stage .btn.lottery:disabled {
+    background: var(--btn-slideshow);
+    color: var(--muted);
+    cursor: default;
+  }
+  .delete-arm { display: flex; justify-content: center; }
+  .delete-confirm { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; justify-content: center; }
+  .delete-confirm[hidden] { display: none !important; }
+  @media (max-width: 640px) {
+    .ch-ava { width: 48px; height: 48px; font-size: 16px; }
+    .ch-pin { font-size: 40px; }
+  }
+  @media (min-width: 641px) {
+    .ch-ava { width: 56px; height: 56px; font-size: 18px; }
+    .ch-pin { font-size: 56px; }
+  }
+</style>
+{% endblock %}
+{% block body %}
+<a class="back-btn" href="{{ url_for('challenge_landing', slug=project.slug) }}">{{ msg.lottery_back }}</a>
+<div class="pjt-stage glass-wait">
+  {% if project.pjt_desktop_show or project.pjt_mobile_show %}
+  <picture>
+    <source media="(max-width: 640px)" srcset="{{ project.pjt_mobile_show }}">
+    <img src="{{ project.pjt_desktop_show }}" alt="" fetchpriority="high">
+  </picture>
+  <div class="pjt-fade" style="opacity: {{ cfg.pjt_fade }}"></div>
+  {% endif %}
+  <div class="glass-stage pjt-ui">
+    <div class="glass-card">
+      <div class="pjt-title-block">
+        <h1>{{ live.name }}</h1>
+      </div>
+      <div class="glass-body">
+        <p class="lead">{{ msg.challenge_room_lead }}</p>
+        {% for category, message in get_flashed_messages(with_categories=true) %}
+          <p class="flash {{ category }}">{{ message }}</p>
+        {% endfor %}
+        <p class="ch-pin">{{ live.pin }}</p>
+        <p class="lead">
+          {{ msg.challenge_kind_demo if live.kind == 'demo' else msg.challenge_kind_adventure }}
+        </p>
+        <p class="lead" id="wait-lead">
+          {% if live.status == 'lobby' %}
+            {{ msg.challenge_lobby.format(n=live.waiting_count, k=live.ready_count) }}
+          {% else %}
+            {{ msg.challenge_live }}
+          {% endif %}
+        </p>
+        <div class="ch-wait" id="wait-row" {% if not waiting %}hidden{% endif %}>
+          {% for w in waiting %}
+          <div class="ch-wait-p {% if not w.ready %}is-off{% endif %}">
+            <div class="ch-ava">
+              {% if w.avatar_url %}<img src="{{ w.avatar_url }}" alt="">{% else %}{{ w.letter }}{% endif %}
+            </div>
+            <span>{{ w.nickname }}</span>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+      <div class="actions">
+        <img class="ch-qr" src="{{ url_for('challenge_qr', slug=project.slug) }}" alt="QR">
+        <p class="lead">{{ msg.challenge_qr_hint }}</p>
+        <form method="post" action="{{ url_for('challenge_start', slug=project.slug, session_id=live.id) }}" id="start-form" {% if live.status != 'lobby' %}hidden{% endif %}>
+          <button class="btn lottery" type="submit" id="start-btn"{% if not live.all_ready %} disabled{% endif %}>{{ msg.challenge_start }}</button>
+        </form>
+        {% if live.status == 'lobby' %}
+        <div class="delete-arm">
+          <button type="button" class="btn secondary js-delete-arm">{{ msg.challenge_clear }}</button>
+          <form class="delete-confirm" hidden method="post" action="{{ url_for('challenge_clear', slug=project.slug, session_id=live.id) }}">
+            <button class="btn danger" type="submit">{{ msg.delete_confirm }}</button>
+            <button class="btn secondary js-delete-cancel" type="button">{{ msg.delete_cancel }}</button>
+          </form>
+        </div>
+        {% endif %}
+      </div>
+    </div>
+    {% include "_credit.html" %}
+  </div>
+</div>
+<script>
+  const godUrl = {{ url_for('challenge_god_api', slug=project.slug, session_id=live.id) | tojson }};
+  const godPage = {{ url_for('challenge_god', slug=project.slug, session_id=live.id) | tojson }};
+  const listUrl = {{ url_for('challenge_landing', slug=project.slug) | tojson }};
+  const lobbyCopy = {{ msg.challenge_lobby | tojson }};
+  const liveCopy = {{ msg.challenge_live | tojson }};
+  const lead = document.getElementById("wait-lead");
+  const row = document.getElementById("wait-row");
+  const startForm = document.getElementById("start-form");
+  const startBtn = document.getElementById("start-btn");
+  function fill(s, vals) {
+    return Object.entries(vals).reduce((t, [k, v]) => t.replaceAll("{" + k + "}", String(v)), s);
+  }
+  function lobbyLine(data) {
+    const k = data.ready_count || 0;
+    const n = data.waiting_count != null ? data.waiting_count : Math.max(0, (data.player_count || 0) - k);
+    return fill(lobbyCopy, { n, k });
+  }
+  function paintWait(waiting) {
+    row.replaceChildren();
+    waiting.forEach((w) => {
+      const box = document.createElement("div");
+      box.className = "ch-wait-p" + (w.ready ? "" : " is-off");
+      const ava = document.createElement("div");
+      ava.className = "ch-ava";
+      if (w.avatar_url) {
+        const img = document.createElement("img");
+        img.src = w.avatar_url;
+        img.alt = "";
+        ava.append(img);
+      } else {
+        ava.textContent = w.letter || "?";
+      }
+      const name = document.createElement("span");
+      name.textContent = w.nickname;
+      box.append(ava, name);
+      row.append(box);
+    });
+  }
+  async function tick() {
+    let data;
+    try {
+      data = await (await fetch(godUrl, { cache: "no-store" })).json();
+    } catch (err) {
+      setTimeout(tick, 1000);
+      return;
+    }
+    const session = data.session;
+    const waiting = data.waiting || [];
+    if (session && session.status === "running") {
+      location.href = godPage;
+      return;
+    }
+    if (!session) {
+      location.href = listUrl;
+      return;
+    } else if (session.status === "lobby") {
+      lead.textContent = lobbyLine(data);
+      row.hidden = waiting.length === 0;
+      paintWait(waiting);
+      if (startForm) startForm.hidden = false;
+      if (startBtn) startBtn.disabled = !data.can_start;
+    } else {
+      lead.textContent = liveCopy;
+      row.hidden = true;
+      if (startForm) startForm.hidden = true;
+    }
+    setTimeout(tick, 1000);
+  }
+  tick();
+  document.querySelectorAll(".delete-arm").forEach((box) => {
+    const arm = box.querySelector(".js-delete-arm");
+    const form = box.querySelector(".delete-confirm");
+    const cancel = box.querySelector(".js-delete-cancel");
+    arm.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      arm.hidden = true;
+      form.hidden = false;
+    });
+    cancel.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      form.hidden = true;
+      arm.hidden = false;
+    });
+  });
+</script>
+{% endblock %}
+{% block credit %}{% endblock %}

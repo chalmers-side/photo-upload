@@ -37,13 +37,25 @@ docker-compose/poc.sh seed   # demo project /p/poc/ with backgrounds, marks, tic
 
 Separate Compose project (`photo-upload-poc`): Postgres in `.poc/postgres`, photos in `.poc/photos` (gitignored), port `POC_PORT` (default 8001). `web/` and `config/` are bind-mounted and gunicorn runs with `--reload`, so Python and template edits apply on save. `web/detector.py` needs `poc.sh restart detector`. Rebuild (`poc.sh up`) only after changing `python/uv.lock`, the Dockerfile, or `nginx.conf`. `poc.sh reset` wipes POC data.
 
+### Event-day private server (this Mac, no OWC)
+
+If the usual runner or SSD is down, run the stack on this computer. JPEGs, Postgres, logs, and judge models live on the internal disk at `/opt/app/photo-upload`. Code stays in this git clone — do not `rsync --delete` the repo into that data directory (it would wipe photos and Postgres). Production compose still defaults to the OWC volume.
+
+```bash
+docker-compose/local.sh doctor   # Docker, File Sharing, disk, /health
+docker-compose/local.sh up       # build from source, http://localhost:8000
+docker-compose/local.sh backup   # pg_dump into /opt/app/photo-upload/backups
+```
+
+Docker Desktop does not share `/opt/app` by default (`Mounts denied`). `local.sh` adds `/opt/app` to File Sharing and restarts Docker Desktop if a bind-mount test fails. Containers use `restart: unless-stopped`. Redis is cache only: detector and judge re-queue pending photos after a Redis bounce; slideshow rebuilds from Postgres. If nginx 502s after an app recreate, `local.sh restart nginx`. If the whale icon says paused, Resume from the menu (`docker desktop restart` if the CLI says already running). Keep the Mac plugged in so it does not sleep. Admin login comes from `docker-compose/secret.env` (created on first `up` if missing). Do not use `poc.sh` on the day: that stack is port 8001, `--reload`, and `.poc/` data.
+
 ## What to change
 
 **Almost always, when moving machines**
 
 | Item | Where | Notes |
 | --- | --- | --- |
-| Photo directory | Compose `HOST_PHOTO_DIR` (or `.env`) | Default `/Volumes/OWC Envoy Pro FX/photo-upload`. Bind the same path on **app** and **nginx**. |
+| Photo directory | Compose `HOST_PHOTO_DIR` (or `.env`) | Default `/Volumes/OWC Envoy Pro FX/photo-upload`. Event-day private server: `/opt/app/photo-upload` via `local.sh`. Bind the same path on **app** and **nginx**. |
 | App logs | `$HOST_PHOTO_DIR/logs` | One file per project per day. Deploy also symlinks `/opt/app/photo-upload/logs`. Older than 30 days are deleted. |
 | Admin login | `docker-compose/secret.env` on the Mac | `ADMIN_USERNAME` / `ADMIN_PASSWORD`. Seeds root in Postgres on first boot only. Gitignored; rsync will not delete it. |
 | `SECRET_KEY` | `docker-compose/secret.env` on the Mac | Signs cookies. Copy `secret.env.example`. Not in git. |
@@ -100,7 +112,7 @@ web/STYLE.md      design system (tokens, glass, buttons, per-page layout)
 web/static/favicon.png   site icon (replace this PNG to swap)
 art/              source art (favicon zip, etc.)
 python/           uv lockfile only (app code is not here)
-docker-compose/   Dockerfile, compose, nginx.conf, POC stack (poc.sh)
+docker-compose/   Dockerfile, compose, nginx.conf, POC (`poc.sh`), event-day (`local.sh`)
 ```
 
 Request flow: browser → nginx `:8000` → `/photos/*` from disk, everything else to gunicorn. Postgres holds projects, users, roles, photo records, tickets, and kuji draws (`$HOST_PHOTO_DIR/postgres`). Redis is the detect queue and slideshow playhead cache. JPEG files live on the host bind.
