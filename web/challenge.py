@@ -131,7 +131,9 @@ def register(app, load_project, current_name, device_id, login_required):
         buf = io.BytesIO()
         qr.make_image(fill_color="black", back_color="white").save(buf, format="PNG")
         buf.seek(0)
-        return send_file(buf, mimetype="image/png")
+        resp = send_file(buf, mimetype="image/png")
+        resp.headers["Cache-Control"] = "no-store"
+        return resp
 
     @app.post("/p/<slug>/challenge/rooms/<session_id>/start")
     @login_required
@@ -157,13 +159,21 @@ def register(app, load_project, current_name, device_id, login_required):
     def challenge_join(slug):
         project = load_project(slug)
         did, _ = device_id()
+        pin = (request.args.get("pin") or "").strip()
+        if challenge_store.PIN_RE.fullmatch(pin):
+            try:
+                challenge_store.join_by_pin(project["id"], did, pin)
+                return redirect(url_for("challenge_play", slug=slug))
+            except ValueError as e:
+                g.log_err = str(e)
+                flash(str(e), "error")
+                return render_template(
+                    "challenge_join.html", project=project, pin=pin
+                )
         live = challenge_store.player_live(project["id"], did)
         if live:
             return redirect(url_for("challenge_play", slug=slug))
-        pin = (request.args.get("pin") or "").strip()
-        if not challenge_store.PIN_RE.fullmatch(pin):
-            pin = ""
-        return render_template("challenge_join.html", project=project, pin=pin)
+        return render_template("challenge_join.html", project=project, pin="")
 
     @app.post("/p/<slug>/challenge/join")
     def challenge_join_post(slug):

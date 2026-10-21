@@ -610,17 +610,33 @@ def create_room(project_id, name, pin, kind):
             return get_session(project_id, sid, conn=conn)
 
 
+def _leave_other_rooms(conn, project_id, device_id, keep_session_id):
+    conn.execute(
+        """
+        DELETE FROM challenge_players p
+        USING challenge_sessions s
+        WHERE p.project_id = s.project_id AND p.session_id = s.id
+          AND p.project_id = %s AND p.device_id = %s
+          AND s.status IN ('lobby', 'running')
+          AND p.session_id <> %s
+        """,
+        (project_id, device_id, keep_session_id),
+    )
+
+
 def join(project_id, device_id, session_id):
     with store.pg().connection() as conn:
         with conn.transaction():
-            existing_live = player_live(project_id, device_id, conn=conn)
-            if existing_live:
-                return dict(existing_live), get_player(
-                    project_id, existing_live["id"], device_id, conn=conn
-                )
             live = get_session(project_id, session_id, conn=conn)
             if not live or live["status"] != "lobby":
                 raise ValueError(msg.challenge_not_open)
+            existing = player_live(project_id, device_id, conn=conn)
+            if existing and existing["id"] == live["id"]:
+                return dict(existing), get_player(
+                    project_id, existing["id"], device_id, conn=conn
+                )
+            if existing:
+                _leave_other_rooms(conn, project_id, device_id, live["id"])
             cap = player_cap(live["kind"])
             n = store._n(
                 store._one(
@@ -671,12 +687,12 @@ def join_by_pin(project_id, device_id, pin):
     pin = (pin or "").strip()
     if not PIN_RE.fullmatch(pin):
         raise ValueError(msg.challenge_bad_pin)
-    live = player_live(project_id, device_id)
-    if live:
-        return dict(live), get_player(project_id, live["id"], device_id)
     found = session_by_pin(project_id, pin)
     if not found:
         raise ValueError(msg.challenge_pin_wrong)
+    live = player_live(project_id, device_id)
+    if live and live["id"] == found["id"]:
+        return dict(live), get_player(project_id, live["id"], device_id)
     if found["status"] != "lobby":
         raise ValueError(msg.challenge_already_started)
     return join(project_id, device_id, found["id"])
