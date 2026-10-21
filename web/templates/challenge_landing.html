@@ -111,7 +111,7 @@
         </div>
       </div>
       <div class="actions">
-        <img class="ch-qr" src="{{ url_for('challenge_qr', slug=project.slug) }}" alt="QR">
+        <img class="ch-qr" src="{{ url_for('challenge_qr', slug=project.slug, session_id=live.id) }}" alt="QR">
         <p class="lead">{{ msg.challenge_qr_hint }}</p>
         <form method="post" action="{{ url_for('challenge_start', slug=project.slug, session_id=live.id) }}" id="start-form" {% if live.status != 'lobby' %}hidden{% endif %}>
           <button class="btn lottery" type="submit" id="start-btn"{% if not live.all_ready %} disabled{% endif %}>{{ msg.challenge_start }}</button>

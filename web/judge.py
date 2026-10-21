@@ -16,7 +16,7 @@ import redis
 from PIL import Image
 
 from config import appsetting
-from web import challenge_store, store
+from web import applog, challenge_store, store
 
 log = logging.getLogger("judge")
 
@@ -353,24 +353,32 @@ def handle(judge, job):
     if not task:
         log.info("skip missing task %s/%s/%s", pid, sid, idx)
         return
+    if task["status"] != "judging" or task.get("photo_id") != photo_id:
+        return
+    started = float(task.get("judging_at") or 0)
+    left = challenge_store.JUDGE_TIMEOUT - (time.time() - started) if started else 0
+    if left <= 0:
+        challenge_store.apply_judge(pid, sid, did, idx, 0.0, "timeout", photo_id=photo_id)
+        applog.write("game", f"{pid} {sid} idx={idx} timeout")
+        return
     dst = challenge_store.submission_path(pid, sid, photo_id)
+    if not dst.is_file():
+        challenge_store.apply_judge(pid, sid, did, idx, 0.0, "no upload", photo_id=photo_id)
+        applog.write("game", f"{pid} {sid} idx={idx} no upload")
+        return
     src = ""
     if task.get("source_photo_id"):
         src = str(store.photo_path(pid, task["source_photo_id"]))
     t0 = time.monotonic()
     score, detail = judge.score(task, src, dst)
     ms = int((time.monotonic() - t0) * 1000)
-    challenge_store.apply_judge(pid, sid, did, idx, score, detail)
-    log.info(
-        "%s/%s idx=%s kind=%s score=%.2f %s %dms",
-        pid,
-        sid,
-        idx,
-        task["kind"],
-        score,
-        detail,
-        ms,
+    challenge_store.apply_judge(pid, sid, did, idx, score, detail, photo_id=photo_id)
+    line = (
+        f"{pid} {sid} idx={idx} kind={task['kind']} "
+        f"score={score:.2f} {detail} {ms}ms"
     )
+    log.info(line)
+    applog.write("game", line)
 
 
 def run():
@@ -417,6 +425,7 @@ def run():
                             int(job["idx"]),
                             0.0,
                             f"error {type(e).__name__}",
+                            photo_id=job.get("photo_id"),
                         )
                     except Exception:
                         pass

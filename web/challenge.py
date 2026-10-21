@@ -114,14 +114,19 @@ def register(app, load_project, current_name, device_id, login_required):
             flash(str(e), "error")
         return redirect(url_for("challenge_room", slug=slug, session_id=session_id))
 
-    @app.get("/p/<slug>/challenge/qr.png")
+    @app.get("/p/<slug>/challenge/rooms/<session_id>/qr.png")
     @login_required
-    def challenge_qr(slug):
+    def challenge_qr(slug, session_id):
         project = load_project(slug)
         if not _host():
             abort(403)
+        live = challenge_store.get_session(project["id"], session_id)
+        if not live or live["status"] not in challenge_store.LIVE:
+            abort(404)
         qr = qrcode.QRCode(border=2, box_size=10)
-        qr.add_data(url_for("challenge_join", slug=slug, _external=True))
+        qr.add_data(
+            url_for("challenge_join", slug=slug, pin=live["pin"], _external=True)
+        )
         qr.make(fit=True)
         buf = io.BytesIO()
         qr.make_image(fill_color="black", back_color="white").save(buf, format="PNG")
@@ -155,18 +160,25 @@ def register(app, load_project, current_name, device_id, login_required):
         live = challenge_store.player_live(project["id"], did)
         if live:
             return redirect(url_for("challenge_play", slug=slug))
-        return render_template("challenge_join.html", project=project)
+        pin = (request.args.get("pin") or "").strip()
+        if not challenge_store.PIN_RE.fullmatch(pin):
+            pin = ""
+        return render_template("challenge_join.html", project=project, pin=pin)
 
     @app.post("/p/<slug>/challenge/join")
     def challenge_join_post(slug):
         project = load_project(slug)
         did, _ = device_id()
+        pin = request.form.get("pin")
         try:
-            challenge_store.join_by_pin(project["id"], did, request.form.get("pin"))
+            challenge_store.join_by_pin(project["id"], did, pin)
         except ValueError as e:
             g.log_err = str(e)
             flash(str(e), "error")
-            return redirect(url_for("challenge_join", slug=slug))
+            kwargs = {"slug": slug}
+            if challenge_store.PIN_RE.fullmatch((pin or "").strip()):
+                kwargs["pin"] = (pin or "").strip()
+            return redirect(url_for("challenge_join", **kwargs))
         return redirect(url_for("challenge_play", slug=slug))
 
     @app.get("/p/<slug>/challenge/play")

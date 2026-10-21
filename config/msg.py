@@ -390,16 +390,16 @@ _STRINGS = {
     "challenge_delete_room": ("刪除房間", "Delete room"),
     "challenge_clear": ("清空挑戰者", "Clear players"),
     "challenge_qr_hint": (
-        "掃碼後輸入桌上四碼",
-        "Scan, then enter the 4-digit table code",
+        "掃碼後會帶入這組四碼",
+        "Scan to fill this 4-digit code",
     ),
     "challenge_room_lead": (
-        "請挑戰者掃 QR，輸入這組四碼。全部準備後開始。",
-        "Players scan the QR and enter this code. Start when everyone is ready.",
+        "請挑戰者掃 QR，房號會自動帶入。全部準備後開始。",
+        "Players scan the QR; the room code fills in. Start when everyone is ready.",
     ),
     "challenge_join_lead": (
-        "請輸入桌上的四位密碼",
-        "Enter the 4-digit code on the table",
+        "請確認桌上的四位密碼後進入",
+        "Check the 4-digit code, then enter",
     ),
     "challenge_need_name": ("請填房間名稱", "Please enter a room name"),
     "challenge_bad_pin": ("請設 4 位數字密碼", "Use a 4-digit code"),

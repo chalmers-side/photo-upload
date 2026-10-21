@@ -12,7 +12,7 @@ from psycopg.errors import UniqueViolation
 
 from config import challenge as challenge_cfg
 from config import msg
-from web import store
+from web import applog, store
 
 JUDGE_Q = "judge_q"
 JUDGE_BUSY = "judge_busy"
@@ -23,6 +23,7 @@ PHOTO_KINDS = ("person", "color", "couple")
 NAME_MAX = 12
 LIVE_ROOM_MAX = 5
 PIN_RE = re.compile(r"^\d{4}$")
+JUDGE_TIMEOUT = 15
 
 
 def cfg():
@@ -79,7 +80,9 @@ def requeue_pending():
         SELECT project_id, session_id, device_id, idx, photo_id
         FROM challenge_tasks
         WHERE status = 'judging' AND photo_id IS NOT NULL
-        """
+          AND judging_at IS NOT NULL AND judging_at >= %s
+        """,
+        (time.time() - JUDGE_TIMEOUT,),
     ):
         job = _judge_job(
             row["project_id"],
@@ -981,12 +984,12 @@ def submit_photo(project_id, device_id, upload_id, dest_exists, idx=None):
             conn.execute(
                 """
                 UPDATE challenge_tasks
-                SET photo_id = %s, status = 'judging',
+                SET photo_id = %s, status = 'judging', judging_at = %s,
                     judge_score = NULL, judge_detail = NULL, reviewed_by = NULL
                 WHERE project_id = %s AND session_id = %s
                   AND device_id = %s AND idx = %s
                 """,
-                (upload_id, project_id, live["id"], device_id, task["idx"]),
+                (upload_id, time.time(), project_id, live["id"], device_id, task["idx"]),
             )
             live_id = live["id"]
             idx = task["idx"]
@@ -1108,7 +1111,40 @@ def override_review(project_id, session_id, device_id, idx, passed, reviewer):
             return get_task(project_id, live["id"], device_id, idx, conn=conn)
 
 
-def apply_judge(project_id, session_id, device_id, idx, score, detail):
+def expire_stale_judging(project_id, session_id, conn=None):
+    cutoff = time.time() - JUDGE_TIMEOUT
+    sql = """
+        UPDATE challenge_tasks
+        SET status = 'failed', judge_score = 0, judge_detail = 'timeout',
+            judging_at = NULL
+        WHERE project_id = %s AND session_id = %s AND status = 'judging'
+          AND (judging_at IS NULL OR judging_at < %s)
+        RETURNING device_id, idx
+    """
+    params = (project_id, session_id, cutoff)
+
+    def run(c):
+        rows = c.execute(sql, params).fetchall()
+        seen = set()
+        for row in rows:
+            applog.write(
+                "game",
+                f"{project_id} {session_id} idx={row['idx']} timeout",
+            )
+            did = row["device_id"]
+            if did not in seen:
+                seen.add(did)
+                _refresh_task_score(c, project_id, session_id, did)
+        return rows
+
+    if conn is not None:
+        return run(conn)
+    with store.pg().connection() as c:
+        with c.transaction():
+            return run(c)
+
+
+def apply_judge(project_id, session_id, device_id, idx, score, detail, photo_id=None):
     ok = float(score) >= threshold()
     with store.pg().connection() as conn:
         with conn.transaction():
@@ -1117,6 +1153,8 @@ def apply_judge(project_id, session_id, device_id, idx, score, detail):
                 return
             task = get_task(project_id, session_id, device_id, idx, conn=conn)
             if not task or task["status"] != "judging":
+                return
+            if photo_id and task.get("photo_id") != photo_id:
                 return
             conn.execute(
                 """
@@ -1210,7 +1248,7 @@ def refresh_band(project_id, device_id, band):
                 conn.execute(
                     """
                     UPDATE challenge_tasks
-                    SET source_photo_id = %s, status = 'pending',
+                    SET source_photo_id = %s, status = 'pending', judging_at = NULL,
                         photo_id = NULL, judge_score = NULL, judge_detail = NULL
                     WHERE project_id = %s AND session_id = %s
                       AND device_id = %s AND idx = %s
@@ -1240,7 +1278,7 @@ def refresh_band(project_id, device_id, band):
                     UPDATE challenge_tasks
                     SET task_id = %s, kind = %s, prompt_zh = %s, prompt_en = %s,
                         color = %s, points = %s, source_photo_id = NULL,
-                        status = 'pending', photo_id = NULL,
+                        status = 'pending', judging_at = NULL, photo_id = NULL,
                         judge_score = NULL, judge_detail = NULL
                     WHERE project_id = %s AND session_id = %s
                       AND device_id = %s AND idx = %s
@@ -1342,6 +1380,8 @@ def player_payload(project_id, device_id, lang):
         live = expire_if_needed(project_id, session=live)
         if live and live["status"] not in LIVE:
             live = None
+        elif live and live["status"] == "running":
+            expire_stale_judging(project_id, live["id"])
     if not live:
         return {"session": None, "player": None, "tasks": [], "current": None, "now": now}
     player = get_player(project_id, live["id"], device_id)
@@ -1396,6 +1436,8 @@ def god_payload(project_id, session_id, lang, can_override):
     live = expire_if_needed(project_id, session_id=session_id)
     if live and live["status"] not in LIVE:
         live = None
+    elif live and live["status"] == "running":
+        expire_stale_judging(project_id, live["id"])
     now = time.time()
     slots = [None, None, None, None]
     can_start = False

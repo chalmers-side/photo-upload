@@ -197,11 +197,13 @@ def create_app():
 
     @app.after_request
     def write_project_log(resp):
-        if request.endpoint in ("health", "slideshow_api", "challenge_me", "challenge_god_api"):
+        ep = request.endpoint or ""
+        if ep in ("health", "slideshow_api", "challenge_me", "challenge_god_api"):
             return resp
         err = getattr(g, "log_err", None)
         pid = getattr(g, "project_id", None)
-        if not pid and not err:
+        is_game = ep.startswith("challenge_")
+        if not is_game and not pid and not err:
             return resp
         ms = int((time.monotonic() - getattr(g, "log_t0", time.monotonic())) * 1000)
         ip = request.headers.get("X-Real-IP") or request.remote_addr or "-"
@@ -210,7 +212,7 @@ def create_app():
             line += f" ERROR {err}"
         elif resp.status_code >= 400:
             line += " ERROR"
-        applog.write(pid or "app", line)
+        applog.write("game" if is_game else (pid or "app"), line)
         return resp
 
     @app.errorhandler(Exception)

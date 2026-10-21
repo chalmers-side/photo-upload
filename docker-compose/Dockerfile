@@ -35,7 +35,7 @@ CMD ["python", "-m", "web.detector"]
 FROM base AS judge
 RUN uv sync --frozen --no-dev --group detector --no-install-project --directory python
 COPY config ./config
-COPY web/__init__.py web/store.py web/challenge_store.py web/judge.py web/clip_bpe.py web/schema.sql ./web/
+COPY web/__init__.py web/store.py web/challenge_store.py web/judge.py web/clip_bpe.py web/applog.py web/schema.sql ./web/
 CMD ["python", "-m", "web.judge"]
 
 FROM nginx:1.27-alpine AS nginx

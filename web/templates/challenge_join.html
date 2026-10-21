@@ -34,7 +34,7 @@
       {% endfor %}
       <form class="stack" method="post" action="{{ url_for('challenge_join', slug=project.slug) }}">
         <label for="join-pin">{{ msg.challenge_room_pin }}</label>
-        <input id="join-pin" name="pin" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" autocomplete="off" required autofocus>
+        <input id="join-pin" name="pin" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" autocomplete="off" required autofocus value="{{ pin or '' }}">
         <button class="btn lottery" type="submit">{{ msg.challenge_join_submit }}</button>
       </form>
     </div>
