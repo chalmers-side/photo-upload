@@ -11,6 +11,7 @@ env:
   IMAGE: ghcr.io/${{ github.repository_owner }}/photo-upload
   IMAGE_NGINX: ghcr.io/${{ github.repository_owner }}/photo-upload-nginx
   IMAGE_DETECTOR: ghcr.io/${{ github.repository_owner }}/photo-upload-detector
+  IMAGE_JUDGE: ghcr.io/${{ github.repository_owner }}/photo-upload-judge
 
 defaults:
   run:
@@ -84,6 +85,19 @@ jobs:
           tags: ${{ env.IMAGE_DETECTOR }}:latest
           labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}
 
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker-compose/Dockerfile
+          target: judge
+          platforms: linux/arm64
+          push: true
+          pull: true
+          provenance: false
+          sbom: false
+          tags: ${{ env.IMAGE_JUDGE }}:latest
+          labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}
+
   deploy:
     needs: build
     runs-on: [self-hosted, macOS, ARM64]
@@ -133,7 +147,7 @@ jobs:
             compose() { docker-compose "$@"; }
           fi
           photo="${HOST_PHOTO_DIR:-/Volumes/OWC Envoy Pro FX/photo-upload}"
-          mkdir -p "$photo/logs" "$photo/postgres"
+          mkdir -p "$photo/logs" "$photo/postgres" "$photo/models"
           if [[ ! -f secret.env ]]; then
             echo "missing docker-compose/secret.env (not in git; copy secret.env.example)" >&2
             exit 1

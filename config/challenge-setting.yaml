@@ -1,7 +1,7 @@
 duration_seconds: 600
 time_bonus_every: 20
 max_players: 4
-judge_threshold: 0.6
+judge_threshold: 0.5
 adventure:
   pick:
     high: 1

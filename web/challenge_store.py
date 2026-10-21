@@ -24,6 +24,7 @@ NAME_MAX = 12
 LIVE_ROOM_MAX = 5
 PIN_RE = re.compile(r"^\d{4}$")
 JUDGE_TIMEOUT = 15
+JUDGE_BUSY_TIMEOUT = 60
 
 
 def cfg():
@@ -31,7 +32,7 @@ def cfg():
 
 
 def threshold():
-    return float(cfg().get("judge_threshold") or 0.6)
+    return float(cfg().get("judge_threshold") or 0.5)
 
 
 def player_cap(kind):
@@ -1128,21 +1129,59 @@ def override_review(project_id, session_id, device_id, idx, passed, reviewer):
 
 
 def expire_stale_judging(project_id, session_id, conn=None):
-    cutoff = time.time() - JUDGE_TIMEOUT
-    sql = """
-        UPDATE challenge_tasks
-        SET status = 'failed', judge_score = 0, judge_detail = 'timeout',
-            judging_at = NULL
-        WHERE project_id = %s AND session_id = %s AND status = 'judging'
-          AND (judging_at IS NULL OR judging_at < %s)
-        RETURNING device_id, idx
-    """
-    params = (project_id, session_id, cutoff)
+    now = time.time()
+    busy = set(store.r().lrange(JUDGE_BUSY, 0, -1) or ())
+    queued = set(store.r().lrange(JUDGE_Q, 0, -1) or ())
+    working = bool(busy)
+
+    def stale(row):
+        job = _judge_job(
+            row["project_id"],
+            row["session_id"],
+            row["device_id"],
+            row["idx"],
+            row["photo_id"],
+        )
+        started = float(row.get("judging_at") or 0)
+        age = now - started if started else now
+        if job in busy:
+            return age >= JUDGE_BUSY_TIMEOUT
+        if job in queued:
+            return (not working) and age >= JUDGE_TIMEOUT
+        return (not started) or age >= JUDGE_TIMEOUT
 
     def run(c):
-        rows = c.execute(sql, params).fetchall()
+        rows = [
+            row
+            for row in store._all(
+                """
+                SELECT project_id, session_id, device_id, idx, photo_id, judging_at
+                FROM challenge_tasks
+                WHERE project_id = %s AND session_id = %s
+                  AND status = 'judging' AND photo_id IS NOT NULL
+                """,
+                (project_id, session_id),
+                conn=c,
+            )
+            if stale(row)
+        ]
         seen = set()
         for row in rows:
+            c.execute(
+                """
+                UPDATE challenge_tasks
+                SET status = 'failed', judge_score = 0, judge_detail = 'timeout',
+                    judging_at = NULL
+                WHERE project_id = %s AND session_id = %s
+                  AND device_id = %s AND idx = %s AND status = 'judging'
+                """,
+                (
+                    project_id,
+                    session_id,
+                    row["device_id"],
+                    row["idx"],
+                ),
+            )
             applog.write(
                 "game",
                 f"{project_id} {session_id} idx={row['idx']} timeout",

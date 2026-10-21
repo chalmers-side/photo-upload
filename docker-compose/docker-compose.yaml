@@ -38,6 +38,26 @@ services:
       postgres:
         condition: service_healthy
 
+  judge:
+    image: ghcr.io/chalmers-side/photo-upload-judge:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    environment:
+      PHOTO_DIR: /data/photos
+      LOG_DIR: /logs
+      REDIS_URL: redis://redis:6379/0
+      DATABASE_URL: postgresql://photo:photo@postgres:5432/photo
+      JUDGE_THREADS: "2"
+      JUDGE_MODEL_DIR: /app/models
+    volumes:
+      - "${HOST_PHOTO_DIR:-/Volumes/OWC Envoy Pro FX/photo-upload}:/data/photos:ro"
+      - "${HOST_PHOTO_DIR:-/Volumes/OWC Envoy Pro FX/photo-upload}/logs:/logs"
+      - "${HOST_PHOTO_DIR:-/Volumes/OWC Envoy Pro FX/photo-upload}/models:/app/models"
+    depends_on:
+      redis:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+
   nginx:
     image: ghcr.io/chalmers-side/photo-upload-nginx:${IMAGE_TAG:-latest}
     restart: unless-stopped

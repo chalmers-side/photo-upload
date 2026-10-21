@@ -355,12 +355,6 @@ def handle(judge, job):
         return
     if task["status"] != "judging" or task.get("photo_id") != photo_id:
         return
-    started = float(task.get("judging_at") or 0)
-    left = challenge_store.JUDGE_TIMEOUT - (time.time() - started) if started else 0
-    if left <= 0:
-        challenge_store.apply_judge(pid, sid, did, idx, 0.0, "timeout", photo_id=photo_id)
-        applog.write("game", f"{pid} {sid} idx={idx} timeout")
-        return
     dst = challenge_store.submission_path(pid, sid, photo_id)
     if not dst.is_file():
         challenge_store.apply_judge(pid, sid, did, idx, 0.0, "no upload", photo_id=photo_id)
