@@ -48,26 +48,32 @@ def submission_url(project_id, session_id, photo_id):
     return f"/photos/{project_id}/challenge/{session_id}/{photo_id}.jpg"
 
 
-def avatar_path(project_id, session_id, device_id):
-    return store.photo_dir(project_id) / "challenge" / session_id / f"ava-{device_id}.jpg"
+def avatar_path(project_id, device_id):
+    return store.photo_dir(project_id) / "challenge" / f"ava-{device_id}.jpg"
+
+
+def _judge_job(project_id, session_id, device_id, idx, photo_id):
+    return json.dumps(
+        {
+            "project_id": project_id,
+            "session_id": session_id,
+            "device_id": device_id,
+            "idx": int(idx),
+            "photo_id": photo_id,
+        }
+    )
 
 
 def enqueue_judge(project_id, session_id, device_id, idx, photo_id):
     store.r().lpush(
         JUDGE_Q,
-        json.dumps(
-            {
-                "project_id": project_id,
-                "session_id": session_id,
-                "device_id": device_id,
-                "idx": idx,
-                "photo_id": photo_id,
-            }
-        ),
+        _judge_job(project_id, session_id, device_id, idx, photo_id),
     )
 
 
 def requeue_pending():
+    queued = set(store.r().lrange(JUDGE_Q, 0, -1) or ())
+    queued.update(store.r().lrange(JUDGE_BUSY, 0, -1) or ())
     for row in store._all(
         """
         SELECT project_id, session_id, device_id, idx, photo_id
@@ -75,13 +81,97 @@ def requeue_pending():
         WHERE status = 'judging' AND photo_id IS NOT NULL
         """
     ):
-        enqueue_judge(
+        job = _judge_job(
             row["project_id"],
             row["session_id"],
             row["device_id"],
             row["idx"],
             row["photo_id"],
         )
+        if job not in queued:
+            store.r().lpush(JUDGE_Q, job)
+
+
+def promote_avatar(project_id, device_id, session_id=None):
+    dest = avatar_path(project_id, device_id)
+    if dest.is_file():
+        return dest
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if session_id:
+        legacy = (
+            store.photo_dir(project_id)
+            / "challenge"
+            / session_id
+            / f"ava-{device_id}.jpg"
+        )
+        if legacy.is_file():
+            shutil.copy2(legacy, dest)
+            return dest
+    root = store.photo_dir(project_id) / "challenge"
+    if root.is_dir():
+        found = sorted(root.glob(f"*/ava-{device_id}.jpg"), reverse=True)
+        if found:
+            shutil.copy2(found[0], dest)
+    return dest
+
+
+def get_profile(project_id, device_id, conn=None):
+    return store._one(
+        """
+        SELECT display_name, avatar_id FROM challenge_profiles
+        WHERE project_id = %s AND device_id = %s
+        """,
+        (project_id, device_id),
+        conn=conn,
+    )
+
+
+def upsert_profile(conn, project_id, device_id, nickname=None, avatar_id=None):
+    row = get_profile(project_id, device_id, conn=conn) or {}
+    name = row.get("display_name") or ""
+    ava = row.get("avatar_id")
+    if nickname is not None:
+        name = nickname
+    if avatar_id:
+        ava = avatar_id
+    conn.execute(
+        """
+        INSERT INTO challenge_profiles (project_id, device_id, display_name, avatar_id)
+        VALUES (%s, %s, %s, %s)
+        ON CONFLICT (project_id, device_id) DO UPDATE SET
+          display_name = EXCLUDED.display_name,
+          avatar_id = EXCLUDED.avatar_id
+        """,
+        (project_id, device_id, name, ava),
+    )
+
+
+def carry_profile(project_id, device_id, conn):
+    row = get_profile(project_id, device_id, conn=conn)
+    if row and ((row.get("display_name") or "").strip() or row.get("avatar_id")):
+        promote_avatar(project_id, device_id)
+        return row.get("display_name") or "", row.get("avatar_id")
+    prev = store._one(
+        """
+        SELECT p.display_name, p.avatar_id, p.session_id
+        FROM challenge_players p
+        JOIN challenge_sessions s
+          ON s.project_id = p.project_id AND s.id = p.session_id
+        WHERE p.project_id = %s AND p.device_id = %s
+          AND (p.display_name <> '' OR p.avatar_id IS NOT NULL)
+        ORDER BY s.created_at DESC
+        LIMIT 1
+        """,
+        (project_id, device_id),
+        conn=conn,
+    )
+    if not prev:
+        return "", None
+    name = prev.get("display_name") or ""
+    ava = prev.get("avatar_id")
+    promote_avatar(project_id, device_id, prev.get("session_id"))
+    upsert_profile(conn, project_id, device_id, name or None, ava)
+    return name, ava
 
 
 def taipei_day_start():
@@ -562,13 +652,14 @@ def join(project_id, device_id, session_id):
                 """,
                 (device_id,),
             )
+            name, ava = carry_profile(project_id, device_id, conn)
             conn.execute(
                 """
                 INSERT INTO challenge_players (
-                  project_id, session_id, slot, device_id
-                ) VALUES (%s, %s, %s, %s)
+                  project_id, session_id, slot, device_id, display_name, avatar_id
+                ) VALUES (%s, %s, %s, %s, %s, %s)
                 """,
-                (project_id, live["id"], slot, device_id),
+                (project_id, live["id"], slot, device_id, name, ava),
             )
             return dict(live), get_player(project_id, live["id"], device_id, conn=conn)
 
@@ -634,10 +725,11 @@ def _face(project_id, session_id, p):
     name = (p.get("display_name") or "").strip() or store.nickname_of(did) or msg.guest_name
     ava = ""
     if p.get("avatar_id"):
-        ava = (
-            f"/photos/{project_id}/challenge/{session_id}/ava-{did}.jpg"
-            f"?v={p['avatar_id']}"
-        )
+        path = promote_avatar(project_id, did, session_id)
+        if path.is_file():
+            ava = f"/photos/{project_id}/challenge/ava-{did}.jpg?v={p['avatar_id']}"
+        else:
+            ava = avatar_url(project_id, did)
     else:
         ava = avatar_url(project_id, did)
     return {
@@ -721,6 +813,7 @@ def set_lobby_profile(project_id, device_id, nickname=None, avatar_id=None):
                 """,
                 args,
             )
+            upsert_profile(conn, project_id, device_id, nickname, avatar_id)
             return get_player(project_id, live["id"], device_id, conn=conn)
 
 
@@ -895,8 +988,11 @@ def submit_photo(project_id, device_id, upload_id, dest_exists, idx=None):
                 """,
                 (upload_id, project_id, live["id"], device_id, task["idx"]),
             )
-            enqueue_judge(project_id, live["id"], device_id, task["idx"], upload_id)
-            return get_task(project_id, live["id"], device_id, task["idx"], conn=conn)
+            live_id = live["id"]
+            idx = task["idx"]
+            out = get_task(project_id, live_id, device_id, idx, conn=conn)
+    enqueue_judge(project_id, live_id, device_id, idx, upload_id)
+    return out
 
 
 def request_host(project_id, device_id, idx=None):
@@ -1204,6 +1300,10 @@ def wipe(project_id):
     with store.pg().connection() as conn:
         conn.execute(
             "DELETE FROM challenge_sessions WHERE project_id = %s",
+            (project_id,),
+        )
+        conn.execute(
+            "DELETE FROM challenge_profiles WHERE project_id = %s",
             (project_id,),
         )
     if folder.exists():

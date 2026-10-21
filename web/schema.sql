@@ -152,6 +152,14 @@ ALTER TABLE challenge_players ADD COLUMN IF NOT EXISTS refresh_left INTEGER NOT 
 ALTER TABLE challenge_players ADD COLUMN IF NOT EXISTS display_name TEXT NOT NULL DEFAULT '';
 ALTER TABLE challenge_players ADD COLUMN IF NOT EXISTS avatar_id TEXT;
 
+CREATE TABLE IF NOT EXISTS challenge_profiles (
+  project_id TEXT NOT NULL,
+  device_id TEXT NOT NULL,
+  display_name TEXT NOT NULL DEFAULT '',
+  avatar_id TEXT,
+  PRIMARY KEY (project_id, device_id)
+);
+
 CREATE TABLE IF NOT EXISTS challenge_tasks (
   project_id TEXT NOT NULL,
   session_id TEXT NOT NULL,
