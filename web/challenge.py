@@ -194,7 +194,7 @@ def register(app, load_project, current_name, device_id, login_required):
         f = request.files.get("photo")
         if f and f.filename:
             avatar_id = uuid.uuid4().hex
-            dest = challenge_store.avatar_path(project["id"], live["id"], did)
+            dest = challenge_store.avatar_path(project["id"], did)
             try:
                 images.save_jpeg(f, dest)
             except Exception as e:

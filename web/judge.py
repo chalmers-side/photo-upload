@@ -400,6 +400,7 @@ def run():
                     "LEFT",
                 )
                 if raw is None:
+                    challenge_store.requeue_pending()
                     continue
                 job = json.loads(raw)
                 try:
